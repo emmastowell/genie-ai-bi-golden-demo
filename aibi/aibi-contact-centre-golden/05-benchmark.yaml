@@ -1,0 +1,261 @@
+version: 2
+threshold_pct: 80
+# Benchmark cases for the Meridian Customer Operations Genie space.
+# Each case has:
+#   question         — the natural-language ask
+#   difficulty       — easy / medium / hard (used by the eval runner only)
+#   expected_tables  — tables Genie's generated SQL must reference
+#                       (used by the eval runner only)
+#   expected_contains— keywords (case-insensitive) that should appear in
+#                       Genie's response or generated SQL
+#                       (used by the eval runner only)
+#   expected_sql     — canonical SQL Genie should produce. This is also
+#                       embedded into the Genie space serialized_space
+#                       (benchmarks block) so it shows in the UI's
+#                       Benchmarks tab.
+#
+# Schema reference:
+#   mv_calls           — metric view (MEASURE total_calls, sla_pct, csat,
+#                        avg_handle_sec, avg_wait_voice_chat_sec,
+#                        abandon_rate, avg_sentiment, negative_share)
+#   silver_calls_wide  — wide row grain, all dims + flags
+#   gold_calls_enriched— per-call + ai_summary on bottom 500 by sentiment
+#   gold_forecast_volume — 30-day volume forecast (ds, y_hat, lower, upper)
+#   silver_agents, silver_sites — dim lookups
+cases:
+
+  # --- Ops health -------------------------------------------------------
+  - id: ops-001
+    question: What's our overall SLA percentage for the last 30 days?
+    difficulty: easy
+    expected_tables: [mv_calls]
+    expected_contains: ["sla_pct"]
+    expected_sql: |
+      SELECT MEASURE(sla_pct) AS sla_pct
+      FROM ${var.catalog}.${var.schema}.mv_calls
+      WHERE date >= current_date() - interval 30 day
+
+  - id: ops-002
+    question: How is service level performing across our sites this quarter?
+    difficulty: medium
+    expected_tables: [mv_calls]
+    expected_contains: ["sla_pct", "site_id"]
+    expected_sql: |
+      SELECT site_id, MEASURE(sla_pct) AS sla_pct, MEASURE(total_calls) AS calls
+      FROM ${var.catalog}.${var.schema}.mv_calls
+      WHERE date >= date_trunc('quarter', current_date())
+      GROUP BY site_id
+      ORDER BY sla_pct ASC
+
+  - id: ops-003
+    question: Which site has the lowest customer satisfaction over the last 90 days?
+    difficulty: medium
+    expected_tables: [mv_calls]
+    expected_contains: ["csat", "site_id", "Toledo"]
+    expected_sql: |
+      SELECT site_id, MEASURE(csat) AS csat
+      FROM ${var.catalog}.${var.schema}.mv_calls
+      WHERE date >= current_date() - interval 90 day
+      GROUP BY site_id
+      ORDER BY csat ASC
+      LIMIT 1
+
+  - id: ops-004
+    question: Show me daily call volume for the last 60 days. Are there weekend dips?
+    difficulty: medium
+    expected_tables: [mv_calls]
+    expected_contains: ["total_calls", "date"]
+    expected_sql: |
+      SELECT date,
+             EXTRACT(dayofweek FROM date) AS dow,
+             MEASURE(total_calls) AS calls
+      FROM ${var.catalog}.${var.schema}.mv_calls
+      WHERE date >= current_date() - interval 60 day
+      GROUP BY date
+      ORDER BY date
+
+  - id: ops-005
+    question: What happened to our SLA on March 6th 2026?
+    difficulty: hard
+    expected_tables: [mv_calls]
+    expected_contains: ["sla_pct", "2026-03-06"]
+    expected_sql: |
+      SELECT date, channel, site_id,
+             MEASURE(total_calls) AS calls,
+             MEASURE(sla_pct)     AS sla_pct,
+             MEASURE(csat)        AS csat
+      FROM ${var.catalog}.${var.schema}.mv_calls
+      WHERE date = DATE'2026-03-06'
+      GROUP BY date, channel, site_id
+      ORDER BY calls DESC
+
+  - id: ops-006
+    question: Which days in the last quarter had SLA below 50%?
+    difficulty: medium
+    expected_tables: [mv_calls]
+    expected_contains: ["sla_pct", "date"]
+    expected_sql: |
+      SELECT date, MEASURE(sla_pct) AS sla_pct
+      FROM ${var.catalog}.${var.schema}.mv_calls
+      WHERE date >= current_date() - interval 90 day
+      GROUP BY date
+      HAVING sla_pct < 0.50
+      ORDER BY date
+
+  # --- Agents -----------------------------------------------------------
+  - id: agt-001
+    question: How do agents hired in the last 90 days compare to tenured agents on handle time?
+    difficulty: medium
+    expected_tables: [silver_calls_wide]
+    expected_contains: ["tenure", "handle_time"]
+    expected_sql: |
+      SELECT tenure_bucket,
+             COUNT(*)             AS calls,
+             AVG(handle_time_sec) AS aht
+      FROM ${var.catalog}.${var.schema}.silver_calls_wide
+      WHERE date >= current_date() - interval 30 day
+      GROUP BY tenure_bucket
+      ORDER BY aht DESC
+
+  - id: agt-002
+    question: Which agents have the lowest average CSAT over the last 30 days?
+    difficulty: easy
+    expected_tables: [silver_calls_wide]
+    expected_contains: ["agent_name", "csat"]
+    expected_sql: |
+      SELECT agent_id, agent_name,
+             COUNT(*)        AS calls,
+             AVG(csat_score) AS csat
+      FROM ${var.catalog}.${var.schema}.silver_calls_wide
+      WHERE date >= current_date() - interval 30 day
+        AND csat_score IS NOT NULL
+      GROUP BY agent_id, agent_name
+      HAVING COUNT(*) >= 30
+      ORDER BY csat ASC
+      LIMIT 10
+
+  - id: agt-003
+    question: Has Birmingham's handle time been getting worse over the last 60 days?
+    difficulty: hard
+    expected_tables: [silver_calls_wide]
+    expected_contains: ["Birmingham", "handle_time", "date"]
+    expected_sql: |
+      SELECT date_trunc('week', date) AS week,
+             AVG(handle_time_sec)     AS avg_aht
+      FROM ${var.catalog}.${var.schema}.silver_calls_wide
+      WHERE site_id = 'Birmingham'
+        AND date >= current_date() - interval 60 day
+      GROUP BY week
+      ORDER BY week
+
+  # --- Voice of Customer ------------------------------------------------
+  - id: voc-001
+    question: What topics have the worst sentiment trend over the last 6 months?
+    difficulty: medium
+    expected_tables: [silver_calls_wide]
+    expected_contains: ["topic", "sentiment"]
+    expected_sql: |
+      SELECT date_trunc('month', date) AS month, topic,
+             AVG(sentiment_score) AS avg_sentiment
+      FROM ${var.catalog}.${var.schema}.silver_calls_wide
+      WHERE date >= current_date() - interval 180 day
+      GROUP BY date_trunc('month', date), topic
+      ORDER BY topic, month
+
+  - id: voc-002
+    question: How does Billing split across voice, chat and email?
+    difficulty: easy
+    expected_tables: [silver_calls_wide]
+    expected_contains: ["channel", "billing"]
+    expected_sql: |
+      SELECT channel, COUNT(*) AS calls
+      FROM ${var.catalog}.${var.schema}.silver_calls_wide
+      WHERE topic = 'Billing'
+        AND date >= current_date() - interval 30 day
+      GROUP BY channel
+      ORDER BY calls DESC
+
+  - id: voc-003
+    question: Summarise the 20 most negative-sentiment calls about Billing.
+    difficulty: hard
+    expected_tables: [gold_calls_enriched]
+    expected_contains: ["ai_summary", "sentiment_score", "billing"]
+    expected_sql: |
+      SELECT call_id, sentiment_score, ai_summary
+      FROM ${var.catalog}.${var.schema}.gold_calls_enriched
+      WHERE topic = 'Billing'
+        AND ai_summary IS NOT NULL
+      ORDER BY sentiment_score ASC
+      LIMIT 20
+
+  - id: voc-004
+    question: Which topic has had the biggest drop in sentiment recently?
+    difficulty: hard
+    expected_tables: [mv_calls]
+    expected_contains: ["topic", "sentiment"]
+    expected_sql: |
+      WITH curr AS (
+        SELECT topic, MEASURE(avg_sentiment) AS s
+        FROM ${var.catalog}.${var.schema}.mv_calls
+        WHERE date >= current_date() - interval 30 day
+        GROUP BY topic
+      ),
+      prev AS (
+        SELECT topic, MEASURE(avg_sentiment) AS s
+        FROM ${var.catalog}.${var.schema}.mv_calls
+        WHERE date >= current_date() - interval 60 day
+          AND date <  current_date() - interval 30 day
+        GROUP BY topic
+      )
+      SELECT curr.topic, curr.s - prev.s AS sentiment_delta
+      FROM curr JOIN prev USING (topic)
+      ORDER BY sentiment_delta ASC
+      LIMIT 1
+
+  # --- Forecast & Plan --------------------------------------------------
+  - id: fcst-001
+    question: Forecast call volume for the next 30 days.
+    difficulty: easy
+    expected_tables: [gold_forecast_volume]
+    expected_contains: ["y_hat", "ds"]
+    expected_sql: |
+      SELECT ds, y_hat, y_hat_lower, y_hat_upper
+      FROM ${var.catalog}.${var.schema}.gold_forecast_volume
+      ORDER BY ds
+
+  - id: fcst-002
+    question: How many agents do we need per shift over the next 30 days at 80% SLA?
+    difficulty: medium
+    expected_tables: [gold_forecast_volume]
+    expected_contains: ["y_hat", "agents"]
+    expected_sql: |
+      SELECT ds, y_hat,
+             y_hat * 372 / (8 * 3600)
+                   / (1 - 0.5 * 0.80)
+                   / (1 - 0.25) AS agents_needed_per_shift
+      FROM ${var.catalog}.${var.schema}.gold_forecast_volume
+      ORDER BY ds
+
+  - id: fcst-003
+    question: Which queue had the biggest abandon-rate spike last week?
+    difficulty: medium
+    expected_tables: [mv_calls]
+    expected_contains: ["abandon_rate", "queue"]
+    expected_sql: |
+      WITH last7 AS (
+        SELECT queue, MEASURE(abandon_rate) AS rate
+        FROM ${var.catalog}.${var.schema}.mv_calls
+        WHERE date >= current_date() - interval 7 day
+        GROUP BY queue
+      ),
+      base AS (
+        SELECT queue, MEASURE(abandon_rate) AS rate
+        FROM ${var.catalog}.${var.schema}.mv_calls
+        WHERE date >= current_date() - interval 37 day
+          AND date <  current_date() - interval 7 day
+        GROUP BY queue
+      )
+      SELECT last7.queue, last7.rate - base.rate AS delta
+      FROM last7 JOIN base USING (queue)
+      ORDER BY delta DESC
+      LIMIT 1

@@ -1,0 +1,336 @@
+{
+  "version": "0.1.0",
+  "display_name": "Meridian Customer Operations \u2014 Contact Centre",
+  "palette": {
+    "accent": "#FF3621",
+    "accent_alt": "#00A972",
+    "ink": "#E6EBF2",
+    "muted": "#8A94A8",
+    "bg": "#0B1220",
+    "panel": "#111A2E",
+    "line": "#1D2640",
+    "ok": "#2FBF71",
+    "warn": "#FF9900",
+    "bad": "#EE5555"
+  },
+  "dimension_colours": {
+    "channel": {
+      "voice": "#FF3621",
+      "chat": "#FF9900",
+      "email": "#00A972"
+    },
+    "topic": {
+      "Billing": "#FF3621",
+      "Order Status": "#FF9900",
+      "Account Access": "#5A8DE3",
+      "Technical Issue": "#00A972",
+      "Cancellation": "#5AD9E3",
+      "General Enquiry": "#C56CFF"
+    }
+  },
+  "typography": {
+    "family": "Inter, -apple-system, 'Segoe UI', sans-serif",
+    "sizes": {
+      "h1": 16,
+      "h2": 13,
+      "body": 14,
+      "small": 12,
+      "micro": 11,
+      "kpi": 26
+    }
+  },
+  "spacing": {
+    "card_padding": 16,
+    "card_gap": 14,
+    "page_padding": 22,
+    "section_gap": 18
+  },
+  "pages": [
+    {
+      "name": "Overview",
+      "hint": "How's the contact centre this week?",
+      "layout": "grid",
+      "cards": [
+        {
+          "type": "scorecard",
+          "label": "Total Calls",
+          "measure": "total_calls",
+          "format": "count",
+          "fill": "#FF3621",
+          "spark": {
+            "window_days": 90,
+            "measure": "total_calls"
+          }
+        },
+        {
+          "type": "scorecard",
+          "label": "SLA %",
+          "measure": "sla_pct",
+          "format": "percent",
+          "fill": "#FF3621",
+          "spark": {
+            "window_days": 90,
+            "measure": "sla_pct"
+          }
+        },
+        {
+          "type": "scorecard",
+          "label": "Avg Handle Time",
+          "measure": "avg_handle_sec",
+          "format": "duration",
+          "fill": "#FF3621",
+          "spark": {
+            "window_days": 90,
+            "measure": "avg_handle_sec"
+          }
+        },
+        {
+          "type": "scorecard",
+          "label": "Avg Wait",
+          "measure": "avg_wait_sec",
+          "format": "duration",
+          "fill": "#FF3621",
+          "spark": {
+            "window_days": 90,
+            "measure": "avg_wait_sec"
+          }
+        },
+        {
+          "type": "scorecard",
+          "label": "CSAT",
+          "measure": "csat",
+          "format": "decimal",
+          "fill": "#FF3621",
+          "spark": {
+            "window_days": 90,
+            "measure": "csat"
+          }
+        },
+        {
+          "type": "scorecard",
+          "label": "Abandon %",
+          "measure": "abandon_pct",
+          "format": "percent",
+          "fill": "#FF3621",
+          "spark": {
+            "window_days": 90,
+            "measure": "abandon_pct"
+          }
+        },
+        {
+          "type": "chart",
+          "chart_type": "stacked-bar",
+          "label": "Volume by channel \u00b7 last 90 days",
+          "source": "demo_golden_dev.contact_centre.mv_ops_kpis",
+          "measure": "total_calls",
+          "dimension": "channel",
+          "time": "date"
+        },
+        {
+          "type": "chart",
+          "chart_type": "horizontal-bar",
+          "label": "Top 5 topics this week",
+          "source": "demo_golden_dev.contact_centre.mv_ops_kpis",
+          "measure": "total_calls",
+          "dimension": "topic",
+          "limit": 5
+        },
+        {
+          "type": "chart",
+          "chart_type": "line",
+          "label": "Sentiment trend by topic \u00b7 last 6 months",
+          "source": "demo_golden_dev.contact_centre.gold_topic_sentiment_daily",
+          "measure": "avg_sentiment",
+          "dimension": "topic",
+          "time": "date"
+        }
+      ]
+    },
+    {
+      "name": "Operations",
+      "hint": "Where are we breaking SLA and why?",
+      "cards": [
+        {
+          "type": "drill_chain",
+          "levels": [
+            "region",
+            "site_id",
+            "queue",
+            "channel"
+          ]
+        },
+        {
+          "type": "chart",
+          "chart_type": "heatmap",
+          "label": "SLA heatmap \u00b7 sites \u00d7 day",
+          "source": "demo_golden_dev.contact_centre.mv_ops_kpis",
+          "x_dim": "date",
+          "y_dim": "site_id",
+          "measure": "sla_pct"
+        },
+        {
+          "type": "chart",
+          "chart_type": "line",
+          "label": "Queue depth over time",
+          "source": "demo_golden_dev.contact_centre.mv_ops_kpis",
+          "measure": "avg_wait_sec",
+          "dimension": "queue",
+          "time": "date"
+        },
+        {
+          "type": "chart",
+          "chart_type": "histogram",
+          "label": "Handle-time distribution",
+          "source": "demo_golden_dev.contact_centre.silver_calls",
+          "measure": "handle_time_sec"
+        }
+      ]
+    },
+    {
+      "name": "Agents",
+      "hint": "Who needs coaching, where do we need coverage?",
+      "cards": [
+        {
+          "type": "chart",
+          "chart_type": "scatter",
+          "label": "Agent performance matrix",
+          "source": "demo_golden_dev.contact_centre.mv_agent_kpis",
+          "x_measure": "avg_handle_sec",
+          "y_measure": "avg_csat",
+          "size_measure": "calls",
+          "colour_dimension": "tenure_bucket"
+        },
+        {
+          "type": "chart",
+          "chart_type": "bar",
+          "label": "Site utilisation vs capacity",
+          "source": "demo_golden_dev.contact_centre.silver_sites",
+          "measure": "capacity",
+          "dimension": "site_id"
+        },
+        {
+          "type": "table",
+          "label": "Agent league table",
+          "source": "demo_golden_dev.contact_centre.mv_agent_kpis",
+          "columns": [
+            "agent_id",
+            "site_id",
+            "tenure_bucket",
+            "calls",
+            "avg_handle_sec",
+            "avg_csat"
+          ],
+          "row_sparklines": [
+            {
+              "measure": "avg_handle_sec",
+              "window_days": 30
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Voice of Customer",
+      "hint": "What are callers actually saying?",
+      "cards": [
+        {
+          "type": "chart",
+          "chart_type": "sankey",
+          "label": "Topic \u2192 Channel flow",
+          "source": "demo_golden_dev.contact_centre.gold_topic_channel_flow",
+          "source_dim": "topic",
+          "target_dim": "channel",
+          "measure": "call_count"
+        },
+        {
+          "type": "chart",
+          "chart_type": "stacked-area",
+          "label": "Topic sentiment trend \u00b7 last 6 months",
+          "source": "demo_golden_dev.contact_centre.gold_topic_sentiment_daily",
+          "measure": "avg_sentiment",
+          "dimension": "topic",
+          "time": "date"
+        },
+        {
+          "type": "callout_group",
+          "label": "Emerging topics",
+          "source": "demo_golden_dev.contact_centre.gold_topic_sentiment_daily",
+          "rule": "wow_volume_delta > 0.20 OR wow_sentiment_delta < -0.20"
+        },
+        {
+          "type": "ai_summary_table",
+          "label": "AI-summarised calls",
+          "source": "demo_golden_dev.contact_centre.gold_calls_enriched",
+          "order_by": "sentiment_score ASC",
+          "limit": 10,
+          "columns": [
+            "call_id",
+            "topic",
+            "sentiment_score",
+            "ai_summary"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Forecast & Plan",
+      "hint": "How should we staff next month?",
+      "parameters": [
+        {
+          "name": "target_sla_pct",
+          "type": "range",
+          "min": 80,
+          "max": 99,
+          "default": 90
+        },
+        {
+          "name": "assumed_aht_sec",
+          "type": "range",
+          "min": 240,
+          "max": 540,
+          "default": 372
+        },
+        {
+          "name": "shrinkage_pct",
+          "type": "range",
+          "min": 10,
+          "max": 40,
+          "default": 25
+        }
+      ],
+      "cards": [
+        {
+          "type": "chart",
+          "chart_type": "line",
+          "label": "Call volume forecast \u00b7 next 30 days",
+          "source": "demo_golden_dev.contact_centre.gold_forecast_volume",
+          "measure": "y_hat",
+          "time": "ds",
+          "bands": [
+            {
+              "lower": "y_hat_lower",
+              "upper": "y_hat_upper"
+            }
+          ]
+        },
+        {
+          "type": "derived_big_number",
+          "label": "Agents needed per day",
+          "formula": "forecast_volume * assumed_aht_sec / 86400 / (target_sla_pct/100) / (1 - shrinkage_pct/100)",
+          "fill": "#00A972"
+        }
+      ]
+    },
+    {
+      "name": "Changelog",
+      "hidden": true,
+      "hint": "SME-team visible only",
+      "cards": [
+        {
+          "type": "markdown",
+          "source_file": "CHANGELOG.md"
+        }
+      ]
+    }
+  ]
+}

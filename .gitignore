@@ -1,0 +1,18 @@
+__pycache__/
+*.pyc
+.venv/
+.databricks/
+*.log
+.DS_Store
+
+# Genie eval scorecards — runtime artefact, regenerated each run
+genie/eval-results/*.json
+!genie/eval-results/.gitkeep
+
+# Internal planning docs (DRD sourcing, Claude Code specs/plans, session
+# handoffs, internal TODO + features backlog) — kept locally for the
+# audit trail but not part of the public repo.
+docs/internal/
+
+# Claude Code session state
+.claude/

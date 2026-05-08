@@ -1,0 +1,1020 @@
+# =====================================================================
+# POST-DEPLOY MANUAL STEPS (UI only — not exposed by the public Databricks API)
+# After running `databricks bundle run data_gen` and the Genie deployer,
+# open the space at /genie/rooms/<space-id> and apply these by hand.
+#
+#   1. Upload the brand logo as the space thumbnail. PNG asset is
+#      generated at ~/Downloads/meridian-icon.png by rendering
+#      meridian_dashboard.LOGO_DATA_URL with rsvg-convert.
+#
+#   2. Mark the space as a Certified Genie Space (Settings → Mark as
+#      certified). Adds the trusted-asset badge to space-level discovery.
+#
+#   3. Re-add the SQL expression from the `sql_expressions:` block below
+#      (Configure → SQL Expressions → + Add). The public POST path is
+#      gated ("Cannot create knowledge snippets directly from instruction
+#      API") so this stays a manual step.
+#
+# Joins are NOT a manual step — Genie auto-discovers them from the UC
+# PK/FK constraints declared in `02-tables-and-metric-views.sql`
+# (silver_calls_wide.agent_id → silver_agents.agent_id, etc.). Verified
+# 2026-05-07 on a fresh space deploy: 4 joins appear automatically
+# without any UI action. The `joins:` block below is documentation only.
+# =====================================================================
+title: Meridian Customer Operations
+description: >
+  Ask anything about contact centre performance: call volumes, SLA, agent
+  performance, topic trends, sentiment, and staffing forecasts. Data covers
+  the last 18 months across 6 sites (Athens, Birmingham, Cambridge, Dublin,
+  Manchester, Toledo) and three channels (voice, chat, email).
+
+# Canonical surface — wide row-grain view + metric view + future-grain
+# forecast. silver_calls_wide is the workhorse for any custom slice;
+# mv_calls is the governed KPI semantic layer (Genie reads MEASURE()
+# definitions directly). silver_agents/sites are dimensional lookups for
+# joins. gold_calls_enriched is kept for individual-call deep dives.
+tables:
+  - name: ${var.catalog}.${var.schema}.mv_calls
+  - name: ${var.catalog}.${var.schema}.silver_calls_wide
+  - name: ${var.catalog}.${var.schema}.gold_kpi_summary
+  - name: ${var.catalog}.${var.schema}.gold_forecast_volume
+  - name: ${var.catalog}.${var.schema}.gold_calls_enriched
+  - name: ${var.catalog}.${var.schema}.silver_agents
+  - name: ${var.catalog}.${var.schema}.silver_sites
+
+# Joins — DOCUMENTATION ONLY. Genie auto-discovers these from the UC
+# PK/FK constraints we declare in `02-tables-and-metric-views.sql`
+# (silver_calls_wide.agent_id → silver_agents.agent_id;
+#  silver_calls_wide.site_id  → silver_sites.site_id; transitive joins
+# through gold_kpi_summary and silver_agents are inferred too). The
+# block below records the canonical pairs Genie should know about — if
+# UC FKs ever go missing, declare them in the SQL DDL or hand-add via
+# Configure → Joins in the UI.
+joins:
+  - left_table:  silver_calls_wide
+    right_table: silver_agents
+    join_on:     "`silver_calls_wide`.`agent_id` = `silver_agents`.`agent_id`"
+    relationship: many_to_one
+    instruction: Used to get agent names etc
+  - left_table:  silver_calls_wide
+    right_table: silver_sites
+    join_on:     "`silver_calls_wide`.`site_id` = `silver_sites`.`site_id`"
+    relationship: many_to_one
+    instruction: Used to get site details
+
+# SQL expressions — reusable derived columns Genie can reference in
+# answers. Stored as SQL_SNIPPET instructions (also non-proto). Codes
+# must use fully-qualified column references — Genie's expression
+# validator rejects bare column names with "Table name or alias is
+# required for column 'X'".
+sql_expressions:
+  - name:  Agents Needed Per Shift
+    alias: agents_needed_per_shift
+    table: gold_forecast_volume
+    type:  MEASURE   # NOT a dimension — agents-needed is a numeric value
+                     # to display, not a category to group by. The UI's
+                     # default DIMENSION classification is wrong; mark it
+                     # MEASURE explicitly so Genie picks it for "how many
+                     # agents do we need" answers correctly.
+    code: |
+      `${var.catalog}`.`${var.schema}`.`gold_forecast_volume`.y_hat * 372.0 / (8 * 3600)
+             / (1 - 0.5 * 0.80)
+             / (1 - 0.25)
+    instruction: ""
+
+# Demo carousel — picked to surface the narrative beats baked into the
+# data: Toledo as the struggling expansion site, Birmingham's degrading
+# handle time, the Mar 6 stress event, the new-hire AHT cluster, the
+# Billing sentiment drift, and the weekend-vs-weekday volume pattern.
+example_questions:
+  - How is service level performing across our sites this quarter?
+  - Which site has the lowest customer satisfaction and why?
+  - What happened to our SLA on March 6th?
+  - Show me daily call volume for the last 60 days — are there weekend patterns?
+  - Has handle time at Birmingham been getting worse?
+  - How do agents hired in the last 90 days compare to tenured agents on AHT?
+  - Summarise the 20 most-negative calls about Billing.
+  - Forecast call volume for the next 30 days and tell me how many agents we need.
+
+# Each entry: `question` is exactly how a user would phrase the ask
+# (the field Genie matches against). `sql` is the canonical answer —
+# parameterised with :name placeholders where it makes sense, so the
+# response gets the "Trusted" badge when Genie reuses the exact text.
+# `comment` is YAML-only documentation for humans and is dropped at
+# deploy time.
+sql_instructions:
+
+  # ===================================================================
+  # KPI FUNDAMENTALS — the metric view as one-source-of-truth
+  # ===================================================================
+  - question: Show me total calls, SLA, AHT, ASA, CSAT and abandon rate broken out by date, channel and site for the last :days days.
+    comment: >
+      Use mv_calls (the metric view) for every KPI question. MEASURE()
+      unwraps the canonical aggregate. Slice by any of: date, week,
+      channel, queue, topic, site_id, region, tenure_bucket.
+    sql: |
+      SELECT date, channel, site_id,
+             MEASURE(total_calls)             AS total_calls,
+             MEASURE(sla_pct)                 AS sla_pct,
+             MEASURE(avg_handle_sec)          AS avg_handle_sec,
+             MEASURE(avg_wait_voice_chat_sec) AS asa,
+             MEASURE(csat)                    AS csat,
+             MEASURE(abandon_rate)            AS abandon_rate
+      FROM ${var.catalog}.${var.schema}.mv_calls
+      WHERE date >= current_date() - interval :days day
+      GROUP BY date, channel, site_id
+
+  - question: What are our overall SLA, CSAT, AHT, ASA, abandon rate and negative-call share for the last :days days?
+    comment: >
+      Single-row scorecard for the headline KPIs. Use this for "how are
+      we doing overall" type questions where the answer is a card not
+      a chart.
+    sql: |
+      SELECT MEASURE(total_calls)             AS calls,
+             MEASURE(sla_pct)                 AS sla_pct,
+             MEASURE(csat)                    AS csat,
+             MEASURE(avg_handle_sec)          AS aht_sec,
+             MEASURE(avg_wait_voice_chat_sec) AS asa_sec,
+             MEASURE(abandon_rate)            AS abandon_rate,
+             MEASURE(negative_share)          AS negative_share
+      FROM ${var.catalog}.${var.schema}.mv_calls
+      WHERE date >= current_date() - interval :days day
+
+  - question: How have SLA, CSAT and AHT changed in the last 30 days versus the previous 30 days?
+    comment: >
+      Period-over-period delta. Use this for "is it getting better/
+      worse" questions when the user wants a single delta rather than
+      a trend line.
+    sql: |
+      WITH curr AS (
+        SELECT MEASURE(sla_pct) AS sla, MEASURE(csat) AS csat,
+               MEASURE(avg_handle_sec) AS aht
+        FROM ${var.catalog}.${var.schema}.mv_calls
+        WHERE date >= current_date() - interval 30 day
+      ),
+      prev AS (
+        SELECT MEASURE(sla_pct) AS sla, MEASURE(csat) AS csat,
+               MEASURE(avg_handle_sec) AS aht
+        FROM ${var.catalog}.${var.schema}.mv_calls
+        WHERE date >= current_date() - interval 60 day
+          AND date <  current_date() - interval 30 day
+      )
+      SELECT curr.sla, prev.sla AS prior_sla, curr.sla - prev.sla AS sla_delta,
+             curr.csat, prev.csat AS prior_csat, curr.csat - prev.csat AS csat_delta,
+             curr.aht, prev.aht AS prior_aht, curr.aht - prev.aht AS aht_delta
+      FROM curr, prev
+
+  - question: Show me KPIs broken out by channel (voice, chat, email) for the last :days days.
+    comment: >
+      voice / chat / email comparison. SLA thresholds differ per channel
+      (voice ≤20s, chat ≤60s, email ≤24h) but mv_calls has flattened
+      that — sla_pct is comparable across channels.
+    sql: |
+      SELECT channel,
+             MEASURE(total_calls)    AS calls,
+             MEASURE(sla_pct)        AS sla_pct,
+             MEASURE(avg_handle_sec) AS aht,
+             MEASURE(csat)           AS csat
+      FROM ${var.catalog}.${var.schema}.mv_calls
+      WHERE date >= current_date() - interval :days day
+      GROUP BY channel
+      ORDER BY calls DESC
+
+  - question: How do KPIs differ across call topics over the last :days days?
+    comment: >
+      Slice KPIs by call topic — Billing, Order Status, Account Access,
+      Technical Issue, Cancellation, General Enquiry.
+    sql: |
+      SELECT topic,
+             MEASURE(total_calls)    AS calls,
+             MEASURE(csat)           AS csat,
+             MEASURE(avg_sentiment)  AS sentiment,
+             MEASURE(negative_share) AS negative_share
+      FROM ${var.catalog}.${var.schema}.mv_calls
+      WHERE date >= current_date() - interval :days day
+      GROUP BY topic
+      ORDER BY calls DESC
+
+  - question: Show me KPIs by region (EMEA, AMER, APAC) for the last :days days.
+    comment: EMEA / AMER / APAC roll-up for executive-level summaries.
+    sql: |
+      SELECT region,
+             MEASURE(total_calls)    AS calls,
+             MEASURE(sla_pct)        AS sla_pct,
+             MEASURE(csat)           AS csat,
+             MEASURE(avg_handle_sec) AS aht
+      FROM ${var.catalog}.${var.schema}.mv_calls
+      WHERE date >= current_date() - interval :days day
+      GROUP BY region
+      ORDER BY calls DESC
+
+  - question: Show the weekly trend in total calls, SLA and CSAT over the last :days days.
+    comment: >
+      Use the `week` dimension (Monday-anchored) for weekly trend lines
+      instead of date — smoother than daily for executive views.
+    sql: |
+      SELECT week,
+             MEASURE(total_calls) AS calls,
+             MEASURE(sla_pct)     AS sla_pct,
+             MEASURE(csat)        AS csat
+      FROM ${var.catalog}.${var.schema}.mv_calls
+      WHERE date >= current_date() - interval :days day
+      GROUP BY week
+      ORDER BY week
+
+  - question: How many negative-sentiment calls did we have in the last :days days?
+    comment: >
+      Headline number for "how many unhappy customers". Negative is
+      defined as sentiment_score < -0.2 (the negative_share measure
+      already encodes this).
+    sql: |
+      SELECT MEASURE(total_calls)    AS calls,
+             MEASURE(negative_share) AS pct_negative,
+             MEASURE(total_calls) * MEASURE(negative_share) AS negative_calls
+      FROM ${var.catalog}.${var.schema}.mv_calls
+      WHERE date >= current_date() - interval :days day
+
+  # ===================================================================
+  # SITE ANALYSIS
+  # ===================================================================
+  - question: Which site has the worst SLA over the last :days days?
+    comment: >
+      Rank sites by any KPI. Use this for "which site has the worst X"
+      questions. Filter to a recent window so historical baselines
+      don't dominate.
+    sql: |
+      SELECT site_id,
+             MEASURE(sla_pct)        AS sla_pct,
+             MEASURE(avg_handle_sec) AS aht,
+             MEASURE(csat)           AS csat
+      FROM ${var.catalog}.${var.schema}.mv_calls
+      WHERE date >= current_date() - interval :days day
+      GROUP BY site_id
+      ORDER BY sla_pct ASC
+
+  - question: Give me a full per-site scorecard — calls, SLA, AHT, ASA, CSAT, abandon rate and negative share — for the last :days days.
+    comment: >
+      Per-site full-KPI table for executive reviews. Use this when the
+      user asks for a "site scorecard" or "compare sites".
+    sql: |
+      SELECT site_id, region,
+             MEASURE(total_calls)             AS calls,
+             MEASURE(sla_pct)                 AS sla_pct,
+             MEASURE(avg_handle_sec)          AS aht,
+             MEASURE(avg_wait_voice_chat_sec) AS asa,
+             MEASURE(csat)                    AS csat,
+             MEASURE(abandon_rate)            AS abandon_rate,
+             MEASURE(negative_share)          AS negative_share
+      FROM ${var.catalog}.${var.schema}.mv_calls
+      WHERE date >= current_date() - interval :days day
+      GROUP BY site_id, region
+      ORDER BY sla_pct ASC
+
+  - question: How has :site performed week by week on calls, SLA, CSAT and AHT over the last :days days?
+    comment: >
+      Drill into a specific site over time. The demo narrative uses
+      Toledo (struggling expansion site) — but parameterising lets
+      Genie answer for any site asked.
+    sql: |
+      SELECT week,
+             MEASURE(total_calls)    AS calls,
+             MEASURE(sla_pct)        AS sla_pct,
+             MEASURE(csat)           AS csat,
+             MEASURE(avg_handle_sec) AS aht
+      FROM ${var.catalog}.${var.schema}.mv_calls
+      WHERE site_id = :site
+        AND date >= current_date() - interval :days day
+      GROUP BY week
+      ORDER BY week
+
+  - question: How does site capacity utilisation look across our sites — calls per agent of provisioned capacity?
+    comment: >
+      Compare daily call volume to provisioned site capacity. site_capacity
+      is configured on silver_sites — the number of concurrent agents
+      the site is provisioned for.
+    sql: |
+      SELECT s.site_id, s.site_capacity,
+             AVG(daily.calls) AS avg_daily_calls,
+             AVG(daily.calls) / s.site_capacity AS calls_per_agent
+      FROM ${var.catalog}.${var.schema}.silver_sites s
+      JOIN (
+        SELECT site_id, date, COUNT(*) AS calls
+        FROM ${var.catalog}.${var.schema}.silver_calls_wide
+        WHERE date >= current_date() - interval 30 day
+        GROUP BY site_id, date
+      ) daily USING (site_id)
+      GROUP BY s.site_id, s.site_capacity
+      ORDER BY calls_per_agent DESC
+
+  - question: How have site SLA rankings shifted week over week — are any sites catching up or falling behind?
+    comment: >
+      ROW_NUMBER over weekly SLA — shows whether site rankings are
+      stable or shifting. Use for "is X site catching up / falling
+      behind" type questions.
+    sql: |
+      SELECT week, site_id, sla_pct,
+             ROW_NUMBER() OVER (PARTITION BY week ORDER BY sla_pct DESC) AS rank
+      FROM (
+        SELECT week, site_id,
+               MEASURE(sla_pct) AS sla_pct
+        FROM ${var.catalog}.${var.schema}.mv_calls
+        WHERE date >= current_date() - interval 60 day
+        GROUP BY week, site_id
+      )
+      ORDER BY week, rank
+
+  # ===================================================================
+  # STRESS / ANOMALY DETECTION
+  # ===================================================================
+  - question: Which days had SLA below 50% in the last :days days?
+    comment: >
+      Find days where SLA dropped sharply and CSAT followed. The two
+      correlate by design — ops events show up in both metrics on the
+      same date.
+    sql: |
+      SELECT date,
+             MEASURE(total_calls) AS calls,
+             MEASURE(sla_pct)     AS sla_pct,
+             MEASURE(csat)        AS csat
+      FROM ${var.catalog}.${var.schema}.mv_calls
+      WHERE date >= current_date() - interval :days day
+      GROUP BY date
+      HAVING sla_pct < 0.50
+      ORDER BY date
+
+  - question: What happened to SLA on :event_date — break it down by channel and site.
+    comment: >
+      Pin-point investigation for a single date. The seeded stress
+      event in the data is 2026-03-06 — Genie picks the value out of
+      the user's question via :event_date.
+    sql: |
+      SELECT date, channel, site_id,
+             MEASURE(total_calls) AS calls,
+             MEASURE(sla_pct)     AS sla_pct,
+             MEASURE(csat)        AS csat
+      FROM ${var.catalog}.${var.schema}.mv_calls
+      WHERE date = :event_date
+      GROUP BY date, channel, site_id
+      ORDER BY calls DESC
+
+  - question: Which days saw the biggest day-over-day drop in SLA in the last :days days?
+    comment: >
+      LAG to compute day-over-day delta, then surface the worst drops.
+      Picks up event-driven SLA cliffs (the seeded Mar 6 stress event).
+    sql: |
+      WITH daily AS (
+        SELECT date, MEASURE(sla_pct) AS sla_pct
+        FROM ${var.catalog}.${var.schema}.mv_calls
+        WHERE date >= current_date() - interval :days day
+        GROUP BY date
+      )
+      SELECT date, sla_pct,
+             sla_pct - LAG(sla_pct) OVER (ORDER BY date) AS sla_delta
+      FROM daily
+      ORDER BY sla_delta ASC
+      LIMIT 5
+
+  - question: Which days in the last :days days saw an unusual spike in the abandon rate?
+    comment: >
+      Find dates where abandon rate broke out of normal bounds. Uses a
+      simple z-score-style comparison against the period baseline.
+    sql: |
+      WITH daily AS (
+        SELECT date, MEASURE(abandon_rate) AS rate
+        FROM ${var.catalog}.${var.schema}.mv_calls
+        WHERE date >= current_date() - interval :days day
+        GROUP BY date
+      ),
+      stats AS (
+        SELECT AVG(rate) AS mu, STDDEV(rate) AS sigma FROM daily
+      )
+      SELECT d.date, d.rate, (d.rate - stats.mu) / stats.sigma AS z
+      FROM daily d, stats
+      WHERE (d.rate - stats.mu) / stats.sigma > 2
+      ORDER BY z DESC
+
+  # ===================================================================
+  # TRENDS & WINDOW FUNCTIONS
+  # ===================================================================
+  - question: How do new, junior and tenured agents compare on calls, AHT, SLA and CSAT over the last :days days?
+    comment: >
+      Use silver_calls_wide when the question goes outside MEASURE() —
+      filtering on individual call attributes, joining ad-hoc, or
+      computing bespoke aggregates. Useful for "new-hire vs tenured"
+      type comparisons because tenure_days lives at the call grain.
+    sql: |
+      SELECT tenure_bucket,
+             COUNT(*)             AS calls,
+             AVG(handle_time_sec) AS aht,
+             AVG(meets_sla)       AS sla_pct,
+             AVG(csat_score)      AS csat
+      FROM ${var.catalog}.${var.schema}.silver_calls_wide
+      WHERE date >= current_date() - interval :days day
+      GROUP BY tenure_bucket
+      ORDER BY aht DESC
+
+  - question: Has handle time at :site been getting worse — show the weekly trend over the last :days days.
+    comment: >
+      Detect AHT drift at a specific site. The data has a seeded
+      degrading anomaly at Birmingham; this query surfaces it as a
+      weekly trend. Parameterised on :site so any site can be asked.
+    sql: |
+      SELECT date_trunc('week', date) AS week,
+             AVG(handle_time_sec) AS avg_aht
+      FROM ${var.catalog}.${var.schema}.silver_calls_wide
+      WHERE site_id = :site
+        AND date >= current_date() - interval :days day
+      GROUP BY week
+      ORDER BY week
+
+  - question: Show me a 7-day rolling SLA for each site over the last 120 days.
+    comment: >
+      Smoothed daily SLA — useful when day-to-day variation drowns out
+      the trend. ROWS BETWEEN 6 PRECEDING gives the trailing 7-day
+      window.
+    sql: |
+      WITH daily AS (
+        SELECT date, site_id, MEASURE(sla_pct) AS sla
+        FROM ${var.catalog}.${var.schema}.mv_calls
+        WHERE date >= current_date() - interval 120 day
+        GROUP BY date, site_id
+      )
+      SELECT date, site_id,
+             AVG(sla) OVER (
+               PARTITION BY site_id ORDER BY date
+               ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
+             ) AS rolling_sla
+      FROM daily
+      ORDER BY date, site_id
+
+  - question: Show the 7-day rolling sentiment score for each topic.
+    comment: 7-day rolling sentiment average per topic — surfaces sentiment drift.
+    sql: |
+      WITH daily AS (
+        SELECT date, topic, AVG(sentiment_score) AS avg_sentiment
+        FROM ${var.catalog}.${var.schema}.silver_calls_wide
+        GROUP BY date, topic
+      )
+      SELECT date, topic,
+             AVG(avg_sentiment) OVER (
+               PARTITION BY topic ORDER BY date
+               ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
+             ) AS rolling_sentiment
+      FROM daily
+
+  - question: Which topics have the biggest week-over-week drop in sentiment over the last :days days?
+    comment: >
+      LAG over weekly sentiment surfaces topics whose customer sentiment
+      is degrading week-on-week. Used by the "emerging topics" widget on
+      the dashboard.
+    sql: |
+      WITH weekly AS (
+        SELECT date_trunc('week', date) AS week, topic,
+               AVG(sentiment_score) AS sentiment
+        FROM ${var.catalog}.${var.schema}.silver_calls_wide
+        WHERE date >= current_date() - interval :days day
+        GROUP BY date_trunc('week', date), topic
+      )
+      SELECT week, topic, sentiment,
+             sentiment - LAG(sentiment) OVER (PARTITION BY topic ORDER BY week)
+               AS wow_delta
+      FROM weekly
+      ORDER BY week DESC, wow_delta ASC
+
+  - question: What is our day-of-week pattern in call volume — are weekends quieter than weekdays?
+    comment: >
+      "Are there weekend dips" — group by EXTRACT(dayofweek). The data
+      has a real Sat/Sun volume reduction baked in.
+    sql: |
+      SELECT EXTRACT(dayofweek FROM date) AS dow,
+             AVG(daily.calls) AS avg_calls
+      FROM (
+        SELECT date, COUNT(*) AS calls
+        FROM ${var.catalog}.${var.schema}.silver_calls_wide
+        WHERE date >= current_date() - interval 60 day
+        GROUP BY date
+      ) daily
+      GROUP BY dow
+      ORDER BY dow
+
+  - question: What is the hour-of-day call volume pattern over the last :days days?
+    comment: >
+      Intraday pattern — use silver_calls_wide.started_at since
+      mv_calls only carries a date dimension.
+    sql: |
+      SELECT HOUR(started_at) AS hour, COUNT(*) AS calls
+      FROM ${var.catalog}.${var.schema}.silver_calls_wide
+      WHERE date >= current_date() - interval :days day
+      GROUP BY HOUR(started_at)
+      ORDER BY hour
+
+  # ===================================================================
+  # AGENTS — performance, cohorts, joins
+  # ===================================================================
+  - question: Which agents have the highest AHT over the last :days days (minimum :min_calls calls)?
+    comment: >
+      Per-agent leaderboard. mv_calls does not carry agent_id — go
+      directly to silver_calls_wide. :min_calls avoids ranking agents
+      who only handled a handful of calls.
+    sql: |
+      SELECT agent_id, agent_name,
+             COUNT(*)             AS calls,
+             AVG(handle_time_sec) AS aht,
+             AVG(meets_sla)       AS sla_pct,
+             AVG(csat_score)      AS csat
+      FROM ${var.catalog}.${var.schema}.silver_calls_wide
+      WHERE date >= current_date() - interval :days day
+      GROUP BY agent_id, agent_name
+      HAVING COUNT(*) >= :min_calls
+      ORDER BY aht DESC
+      LIMIT 10
+
+  - question: Which agents have the lowest CSAT over the last :days days?
+    comment: Agents with the worst customer satisfaction over a window.
+    sql: |
+      SELECT agent_id, agent_name, site_id,
+             COUNT(*)        AS calls,
+             AVG(csat_score) AS csat,
+             AVG(meets_sla)  AS sla_pct
+      FROM ${var.catalog}.${var.schema}.silver_calls_wide
+      WHERE date >= current_date() - interval :days day
+        AND csat_score IS NOT NULL
+      GROUP BY agent_id, agent_name, site_id
+      HAVING COUNT(*) >= 30
+      ORDER BY csat ASC
+      LIMIT 15
+
+  - question: Compare new, junior and tenured agents on calls, AHT, SLA and CSAT for the last 30 days.
+    comment: >
+      Compare KPI shape across tenure buckets. The data has new-hire
+      AHT noticeably higher than tenured — the cohort view surfaces
+      that gap directly.
+    sql: |
+      SELECT tenure_bucket,
+             COUNT(*)             AS calls,
+             AVG(handle_time_sec) AS aht,
+             AVG(meets_sla)       AS sla_pct,
+             AVG(csat_score)      AS csat
+      FROM ${var.catalog}.${var.schema}.silver_calls_wide
+      WHERE date >= current_date() - interval 30 day
+      GROUP BY tenure_bucket
+      ORDER BY tenure_bucket
+
+  - question: Show me the onboarding curve — how does AHT change as agents accumulate tenure?
+    comment: >
+      Bucket calls by tenure_days at time of call (in 30-day buckets)
+      to see how long it takes for AHT to normalise after hire.
+    sql: |
+      SELECT FLOOR(tenure_days / 30) * 30 AS tenure_days_bucket,
+             COUNT(*)                     AS calls,
+             AVG(handle_time_sec)         AS aht,
+             AVG(meets_sla)               AS sla_pct
+      FROM ${var.catalog}.${var.schema}.silver_calls_wide
+      WHERE tenure_days BETWEEN 0 AND 540
+        AND date >= current_date() - interval 90 day
+      GROUP BY FLOOR(tenure_days / 30) * 30
+      ORDER BY tenure_days_bucket
+
+  - question: How are agents hired in the last :days days performing on calls, AHT and CSAT?
+    comment: >
+      Joins silver_agents → silver_calls_wide on agent_id so we can
+      filter by hire_date directly rather than relying on tenure_days.
+    sql: |
+      SELECT a.agent_id, a.full_name, a.hire_date, a.site_id,
+             COUNT(c.call_id)         AS calls,
+             AVG(c.handle_time_sec)   AS aht,
+             AVG(c.csat_score)        AS csat
+      FROM ${var.catalog}.${var.schema}.silver_agents a
+      JOIN ${var.catalog}.${var.schema}.silver_calls_wide c
+        ON c.agent_id = a.agent_id
+      WHERE a.hire_date >= current_date() - interval :days day
+        AND c.date >= current_date() - interval 30 day
+      GROUP BY a.agent_id, a.full_name, a.hire_date, a.site_id
+      ORDER BY aht DESC
+
+  - question: Compare teams Alpha, Bravo, Charlie and Delta on calls, AHT, SLA and CSAT over the last :days days.
+    comment: >
+      Team-level roll-up. Uses the team column on silver_calls_wide
+      (denormalised from silver_agents).
+    sql: |
+      SELECT team,
+             COUNT(*)             AS calls,
+             AVG(handle_time_sec) AS aht,
+             AVG(meets_sla)       AS sla_pct,
+             AVG(csat_score)      AS csat
+      FROM ${var.catalog}.${var.schema}.silver_calls_wide
+      WHERE date >= current_date() - interval :days day
+      GROUP BY team
+      ORDER BY sla_pct ASC
+
+  - question: Which agents had the biggest CSAT decline in the last 30 days versus the prior month?
+    comment: >
+      Agents whose CSAT dropped most between the prior month and the
+      current month. Self-aggregate twice and join on agent_id.
+    sql: |
+      WITH curr AS (
+        SELECT agent_id, AVG(csat_score) AS csat, COUNT(*) AS calls
+        FROM ${var.catalog}.${var.schema}.silver_calls_wide
+        WHERE date >= current_date() - interval 30 day
+          AND csat_score IS NOT NULL
+        GROUP BY agent_id
+      ),
+      prev AS (
+        SELECT agent_id, AVG(csat_score) AS csat
+        FROM ${var.catalog}.${var.schema}.silver_calls_wide
+        WHERE date >= current_date() - interval 60 day
+          AND date <  current_date() - interval 30 day
+          AND csat_score IS NOT NULL
+        GROUP BY agent_id
+      )
+      SELECT a.full_name, curr.csat AS curr_csat, prev.csat AS prev_csat,
+             curr.csat - prev.csat AS csat_delta, curr.calls
+      FROM curr
+      JOIN prev USING (agent_id)
+      JOIN ${var.catalog}.${var.schema}.silver_agents a USING (agent_id)
+      WHERE curr.calls >= 30
+      ORDER BY csat_delta ASC
+      LIMIT 10
+
+  - question: How do full-time and part-time agents compare on calls, AHT, SLA and CSAT?
+    comment: >
+      Compare KPI shape across employment type. full_time is on
+      silver_agents — denormalised onto silver_calls_wide.
+    sql: |
+      SELECT full_time,
+             COUNT(*)             AS calls,
+             AVG(handle_time_sec) AS aht,
+             AVG(meets_sla)       AS sla_pct,
+             AVG(csat_score)      AS csat
+      FROM ${var.catalog}.${var.schema}.silver_calls_wide
+      WHERE date >= current_date() - interval 30 day
+      GROUP BY full_time
+
+  # ===================================================================
+  # TOPIC / VOICE OF CUSTOMER
+  # ===================================================================
+  - question: Rank topics by average customer sentiment over the last :days days.
+    comment: >
+      Topics ordered by avg sentiment — picks up "which topic are
+      customers most unhappy with". Filter to a recent window.
+    sql: |
+      SELECT topic,
+             MEASURE(total_calls)    AS calls,
+             MEASURE(avg_sentiment)  AS sentiment,
+             MEASURE(negative_share) AS pct_negative
+      FROM ${var.catalog}.${var.schema}.mv_calls
+      WHERE date >= current_date() - interval :days day
+      GROUP BY topic
+      ORDER BY sentiment ASC
+
+  - question: Which topic has had the biggest drop in sentiment recently — last 30 days versus prior 30 days?
+    comment: >
+      Compare last 30 days against prior 30 days per topic — surface
+      the topic whose sentiment degraded most. Mirrors the "emerging
+      topic" widget logic.
+    sql: |
+      WITH curr AS (
+        SELECT topic, MEASURE(avg_sentiment) AS s
+        FROM ${var.catalog}.${var.schema}.mv_calls
+        WHERE date >= current_date() - interval 30 day
+        GROUP BY topic
+      ),
+      prev AS (
+        SELECT topic, MEASURE(avg_sentiment) AS s
+        FROM ${var.catalog}.${var.schema}.mv_calls
+        WHERE date >= current_date() - interval 60 day
+          AND date <  current_date() - interval 30 day
+        GROUP BY topic
+      )
+      SELECT curr.topic, curr.s AS curr_sentiment, prev.s AS prev_sentiment,
+             curr.s - prev.s AS delta
+      FROM curr JOIN prev USING (topic)
+      ORDER BY delta ASC
+
+  - question: How does each topic split across voice, chat and email channels in the last :days days?
+    comment: >
+      How does each topic split across voice/chat/email? Useful for
+      routing/staffing decisions ("Billing is mostly voice, Account
+      Access is mostly chat").
+    sql: |
+      SELECT topic, channel,
+             COUNT(*)                                              AS calls,
+             COUNT(*) * 1.0 / SUM(COUNT(*)) OVER (PARTITION BY topic) AS share
+      FROM ${var.catalog}.${var.schema}.silver_calls_wide
+      WHERE date >= current_date() - interval :days day
+      GROUP BY topic, channel
+      ORDER BY topic, calls DESC
+
+  - question: Which site / topic combinations have the highest share of negative-sentiment calls in the last :days days?
+    comment: >
+      Heatmap-style query — which (site, topic) cells have the highest
+      share of negative calls. Drives "where should we focus VOC" type
+      questions.
+    sql: |
+      SELECT site_id, topic,
+             COUNT(*)              AS calls,
+             AVG(is_negative)      AS pct_negative,
+             AVG(sentiment_score)  AS avg_sentiment
+      FROM ${var.catalog}.${var.schema}.silver_calls_wide
+      WHERE date >= current_date() - interval :days day
+      GROUP BY site_id, topic
+      HAVING COUNT(*) >= 50
+      ORDER BY pct_negative DESC
+
+  - question: What share of total call volume does each topic represent in the last :days days?
+    comment: >
+      Pareto view — what fraction of calls each topic represents.
+      Useful as a denominator check before chasing a topic with low
+      sentiment but tiny volume.
+    sql: |
+      SELECT topic,
+             MEASURE(total_calls) AS calls,
+             MEASURE(total_calls) * 1.0
+               / SUM(MEASURE(total_calls)) OVER () AS share
+      FROM ${var.catalog}.${var.schema}.mv_calls
+      WHERE date >= current_date() - interval :days day
+      GROUP BY topic
+      ORDER BY calls DESC
+
+  - question: Show me weekly call volume by topic over the last 180 days — is any topic spiking?
+    comment: >
+      Topic mix by week — useful for "is Cancellation spiking" type
+      questions. Pivot in BI tools or stack on the chart.
+    sql: |
+      SELECT date_trunc('week', date) AS week, topic, COUNT(*) AS calls
+      FROM ${var.catalog}.${var.schema}.silver_calls_wide
+      WHERE date >= current_date() - interval 180 day
+      GROUP BY date_trunc('week', date), topic
+      ORDER BY week, topic
+
+  # ===================================================================
+  # AI FUNCTIONS — summaries, sentiment labels
+  # ===================================================================
+  - question: Summarise the :n most negative-sentiment calls about :topic.
+    comment: >
+      Pull ai_summary text for bottom-sentiment calls on a topic. The
+      bottom 500 calls by sentiment carry ai_summary and ai_sentiment_label
+      populated; everything else has them NULL.
+    sql: |
+      SELECT call_id, topic, sentiment_score, ai_summary
+      FROM ${var.catalog}.${var.schema}.gold_calls_enriched
+      WHERE topic = :topic
+        AND sentiment_score < -0.2
+        AND ai_summary IS NOT NULL
+      ORDER BY sentiment_score ASC
+      LIMIT :n
+
+  - question: How does AI-classified sentiment break down across topics?
+    comment: >
+      What ai_analyze_sentiment classified the bottom-500 most-negative
+      calls as. Useful for confirming the seeded sentiment matches what
+      the model actually returns.
+    sql: |
+      SELECT topic, ai_sentiment_label, COUNT(*) AS calls
+      FROM ${var.catalog}.${var.schema}.silver_calls_wide
+      WHERE ai_sentiment_label IS NOT NULL
+      GROUP BY topic, ai_sentiment_label
+      ORDER BY topic, calls DESC
+
+  - question: Generate a fresh ai_summarize for call_id :call_id.
+    comment: >
+      Call ai_summarize at query time on a transcript-bearing row.
+      Costlier than reading the pre-computed ai_summary column — only
+      use when the user wants a fresh summary or asks about a call
+      outside the bottom-500 slice.
+    sql: |
+      SELECT call_id, topic,
+             ai_summarize(transcript, 60) AS fresh_summary
+      FROM ${var.catalog}.${var.schema}.gold_calls_enriched
+      WHERE call_id = :call_id
+
+  # ===================================================================
+  # FORECAST & STAFFING
+  # ===================================================================
+  - question: Forecast call volume for the next 30 days and tell me how many agents we need per shift.
+    comment: >
+      30-day call-volume forecast plus the canonical staffing formula —
+      same parameters as the dashboard scenario page (8h shift, 80% SLA
+      target, 25% shrinkage, 372s AHT). The (1 - 0.5 * target_sla) term
+      is the occupancy-headroom divisor: tighter SLA = more agents.
+    sql: |
+      SELECT ds, y_hat, y_hat_lower, y_hat_upper,
+             y_hat * 372 / (8 * 3600)
+                   / (1 - 0.5 * 0.80)
+                   / (1 - 0.25) AS agents_needed_per_shift
+      FROM ${var.catalog}.${var.schema}.gold_forecast_volume
+      ORDER BY ds
+
+  - question: Show me forecast call volume next to the last 30 days of actuals on a single timeline.
+    comment: >
+      Stitch the 30-day forecast with the last 30 days of actuals so a
+      single chart shows both. Use this for "what is the forecast vs
+      what we did last month".
+    sql: |
+      SELECT date AS day, total_calls AS y_actual, NULL AS y_hat,
+             NULL AS y_hat_lower, NULL AS y_hat_upper, 'actual' AS source
+      FROM (
+        SELECT date, MEASURE(total_calls) AS total_calls
+        FROM ${var.catalog}.${var.schema}.mv_calls
+        WHERE date >= current_date() - interval 30 day
+        GROUP BY date
+      )
+      UNION ALL
+      SELECT ds, NULL, y_hat, y_hat_lower, y_hat_upper, 'forecast'
+      FROM ${var.catalog}.${var.schema}.gold_forecast_volume
+      ORDER BY day
+
+  - question: How many agents do we need per shift at SLA targets of 70%, 80%, 90% and 95%?
+    comment: >
+      Sensitivity table — agents-per-shift required across SLA targets
+      from 70% to 95%. Use this for "what if we tighten SLA" questions.
+    sql: |
+      WITH targets(t) AS (VALUES (0.70), (0.80), (0.90), (0.95))
+      SELECT t AS target_sla,
+             AVG(y_hat * 372 / (8 * 3600)
+                       / (1 - 0.5 * t)
+                       / (1 - 0.25)) AS avg_agents_needed
+      FROM ${var.catalog}.${var.schema}.gold_forecast_volume, targets
+      GROUP BY t
+      ORDER BY t
+
+  - question: How wide is the forecast confidence interval per day — when is the forecast least reliable?
+    comment: >
+      Width of the forecast uncertainty band per day. Useful for
+      surfacing "this forecast is more / less reliable on day X".
+    sql: |
+      SELECT ds, y_hat,
+             y_hat_upper - y_hat_lower AS ci_width,
+             (y_hat_upper - y_hat_lower) / NULLIF(y_hat, 0) AS ci_relative
+      FROM ${var.catalog}.${var.schema}.gold_forecast_volume
+      ORDER BY ds
+
+  # ===================================================================
+  # JOINS — silver_agents, silver_sites
+  # ===================================================================
+  - question: Show me each site's region, timezone, capacity and recent call/SLA performance.
+    comment: >
+      Join silver_calls_wide → silver_sites for site-level attributes
+      (region, timezone, capacity) when those are not already on the
+      wide table.
+    sql: |
+      SELECT s.site_id, s.region, s.timezone, s.capacity,
+             COUNT(c.call_id)     AS calls,
+             AVG(c.meets_sla)     AS sla_pct
+      FROM ${var.catalog}.${var.schema}.silver_sites s
+      LEFT JOIN ${var.catalog}.${var.schema}.silver_calls_wide c
+        ON c.site_id = s.site_id
+       AND c.date >= current_date() - interval 30 day
+      GROUP BY s.site_id, s.region, s.timezone, s.capacity
+      ORDER BY calls DESC
+
+  - question: Give me an agent × site matrix of calls, AHT, CSAT and SLA over the last 30 days.
+    comment: >
+      Combine agent and site dims for a single matrix-style result.
+      Useful for "which agents at site X" or "best agent per site"
+      type questions.
+    sql: |
+      WITH agg AS (
+        SELECT a.agent_id, a.full_name, a.hire_date,
+               s.site_id, s.region,
+               COUNT(c.call_id)        AS calls,
+               AVG(c.handle_time_sec)  AS aht,
+               AVG(c.csat_score)       AS csat,
+               AVG(c.meets_sla)        AS sla_pct
+        FROM ${var.catalog}.${var.schema}.silver_agents a
+        JOIN ${var.catalog}.${var.schema}.silver_sites  s
+          ON s.site_id = a.site_id
+        JOIN ${var.catalog}.${var.schema}.silver_calls_wide c
+          ON c.agent_id = a.agent_id
+        WHERE c.date >= current_date() - interval 30 day
+        GROUP BY a.agent_id, a.full_name, a.hire_date, s.site_id, s.region
+      )
+      SELECT * FROM agg WHERE calls >= 30 ORDER BY sla_pct DESC
+
+  - question: Who is the top-SLA agent at each site over the last 30 days?
+    comment: >
+      QUALIFY + ROW_NUMBER to pick the top performer per site by SLA.
+    sql: |
+      SELECT site_id, agent_id, agent_name, calls, sla_pct
+      FROM (
+        SELECT site_id, agent_id, agent_name,
+               COUNT(*)         AS calls,
+               AVG(meets_sla)   AS sla_pct
+        FROM ${var.catalog}.${var.schema}.silver_calls_wide
+        WHERE date >= current_date() - interval 30 day
+        GROUP BY site_id, agent_id, agent_name
+        HAVING COUNT(*) >= 30
+      )
+      QUALIFY ROW_NUMBER() OVER (PARTITION BY site_id ORDER BY sla_pct DESC) = 1
+
+  - question: How many calls per channel are missing an SLA-eligible wait time?
+    comment: >
+      Email-only carve-out — wait_time_voice_chat_sec is NULL for email
+      rows. Useful when explaining why ASA differs from raw
+      wait_time_sec averages.
+    sql: |
+      SELECT channel,
+             COUNT(*)                                                AS calls,
+             SUM(CASE WHEN wait_time_voice_chat_sec IS NULL THEN 1 ELSE 0 END) AS null_vc
+      FROM ${var.catalog}.${var.schema}.silver_calls_wide
+      WHERE date >= current_date() - interval 30 day
+      GROUP BY channel
+
+  # ===================================================================
+  # CHANNEL / QUEUE
+  # ===================================================================
+  - question: Rank queues by SLA, AHT and abandon rate over the last :days days.
+    comment: Per-queue KPI snapshot — mv_calls supports queue as a dim.
+    sql: |
+      SELECT queue,
+             MEASURE(total_calls)    AS calls,
+             MEASURE(sla_pct)        AS sla_pct,
+             MEASURE(avg_handle_sec) AS aht,
+             MEASURE(abandon_rate)   AS abandon_rate
+      FROM ${var.catalog}.${var.schema}.mv_calls
+      WHERE date >= current_date() - interval :days day
+      GROUP BY queue
+      ORDER BY abandon_rate DESC
+
+  - question: Which queue had the biggest abandon-rate spike in the last 7 days versus the prior 30 days?
+    comment: Compare last-7d abandon vs the prior 30d baseline per queue.
+    sql: |
+      WITH last7 AS (
+        SELECT queue, MEASURE(abandon_rate) AS rate
+        FROM ${var.catalog}.${var.schema}.mv_calls
+        WHERE date >= current_date() - interval 7 day GROUP BY queue
+      ),
+      base AS (
+        SELECT queue, MEASURE(abandon_rate) AS rate
+        FROM ${var.catalog}.${var.schema}.mv_calls
+        WHERE date >= current_date() - interval 37 day
+          AND date <  current_date() - interval 7 day GROUP BY queue
+      )
+      SELECT last7.queue, last7.rate AS last_7d, base.rate AS prior_30d,
+             last7.rate - base.rate AS delta
+      FROM last7 JOIN base USING (queue)
+      ORDER BY delta DESC
+
+  - question: Show me daily SLA broken out by channel over the last :days days.
+    comment: >
+      Daily SLA by channel — exposes whether one channel drives the
+      overall SLA dip on a given day.
+    sql: |
+      SELECT date, channel, MEASURE(sla_pct) AS sla_pct
+      FROM ${var.catalog}.${var.schema}.mv_calls
+      WHERE date >= current_date() - interval :days day
+      GROUP BY date, channel
+      ORDER BY date, channel
+
+  - question: What is the average speed of answer (ASA) for voice versus chat in the last :days days?
+    comment: >
+      ASA only makes sense for voice + chat — email response time would
+      dominate the average. mv_calls.avg_wait_voice_chat_sec already
+      filters that out.
+    sql: |
+      SELECT channel,
+             MEASURE(avg_wait_voice_chat_sec) AS asa
+      FROM ${var.catalog}.${var.schema}.mv_calls
+      WHERE date >= current_date() - interval :days day
+        AND channel IN ('voice', 'chat')
+      GROUP BY channel
+
+room_instructions: |
+  1. Prefer mv_calls (the metric view) for any KPI question — its measures
+     are the canonical SLA / ASA / AHT / abandon / CSAT / sentiment / volume
+     definitions and Genie should default there. mv_calls sources from
+     gold_kpi_summary (pre-aggregated) for fast scans. Use silver_calls_wide
+     ONLY for: per-agent questions (agent_name / agent_id), individual-call
+     filters, sub-aggregate fields (handle_time_min, etc.), or hour-of-day
+     intraday patterns (started_at is not on mv_calls).
+  2. Use gold_calls_enriched only for individual-call or transcript-level
+     questions — it carries ai_summary text on the bottom 500 most-negative
+     calls; everything else has ai_summary = NULL. Calling ai_summarize at
+     query time is allowed but expensive — only do so for a single call_id.
+  3. Never join bronze_* tables — raw ingestion, not in this space.
+  4. Default time window is the last 90 days unless the user specifies
+     otherwise.
+  5. Synonyms: AHT = avg_handle_sec; ASA / wait time = avg_wait_voice_chat_sec
+     (voice + chat only — email is excluded so 24h email response times do
+     not skew the average); CSAT = customer satisfaction (1-5 scale,
+     excludes ~30% no-survey calls); SLA = service-level % (channel-aware
+     threshold: voice ≤20s, chat ≤60s, email ≤24h; abandoned calls count
+     as missed SLA).
+  6. Channels are exactly voice, chat, email. Topics are exactly Billing,
+     Order Status, Account Access, Technical Issue, Cancellation, General
+     Enquiry. Sites are exactly Athens, Birmingham, Cambridge, Dublin,
+     Manchester, Toledo. Regions are EMEA / AMER / APAC.
+  7. Sentiment is in [-1, 1]. "Negative sentiment" means < -0.2. Use the
+     negative_share measure (= AVG(is_negative)) for percent of calls.
+  8. Tenure buckets on agents: 'new' (≤90 days), 'junior' (≤365 days),
+     'tenured' (>365 days). For "agents hired in the last N days" questions,
+     filter `silver_calls_wide.tenure_days <= N` (or join to silver_agents
+     and filter `hire_date`).
+  9. Forecast/staffing math: gold_forecast_volume has 30 future days of
+     y_hat plus CI bounds. Use the 'agents_needed_per_shift' SQL expression
+     for staffing calculations. Defaults: AHT=372s, shift=8h,
+     target_sla=0.80, shrinkage=0.25. Tighter SLA → more agents
+     (the (1 - 0.5 * sla) term shrinks); higher shrinkage → more agents.
+  10. PK/FK constraints exist for join correctness: silver_calls_wide.call_id
+      PK; silver_calls_wide.(agent_id, site_id) → silver_agents / silver_sites.
+      Genie can rely on these for join planning.

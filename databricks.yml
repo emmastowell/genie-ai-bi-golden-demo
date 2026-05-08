@@ -1,0 +1,51 @@
+bundle:
+  name: golden-demo
+
+variables:
+  catalog:
+    description: Unity Catalog to deploy into
+    default: demo_golden_dev
+  schema:
+    description: Schema to deploy into
+    default: contact_centre
+  warehouse_id:
+    description: >
+      SQL warehouse the Lakeview dashboard will run its queries against.
+      Must be set per target. Serverless Pro or Pro tier required for
+      ai_forecast / ai_summarize / ai_analyze_sentiment.
+    default: ""
+
+resources:
+  jobs:
+    data_gen:
+      name: "[golden-demo] Data generation + tables"
+      tasks:
+        - task_key: generate_and_materialise
+          notebook_task:
+            notebook_path: ./aibi/aibi-contact-centre-golden/01-data-generation.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+              sql_path: ${workspace.file_path}/aibi/aibi-contact-centre-golden/02-tables-and-metric-views.sql
+              n_calls: "1000000"
+          environment_key: default
+      environments:
+        - environment_key: default
+          spec: { client: "3" }
+
+  schemas:
+    contact_centre:
+      catalog_name: ${var.catalog}
+      name: ${var.schema}
+
+targets:
+  # Replace the placeholders below with your workspace details, then run
+  # `databricks bundle deploy --target default` from the repo root.
+  default:
+    mode: development
+    workspace:
+      host: https://<your-workspace>.cloud.databricks.com
+    variables:
+      catalog: <your-catalog>
+      schema: <your-schema>
+      warehouse_id: "<your-warehouse-id>"
