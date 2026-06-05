@@ -1,0 +1,4201 @@
+{
+  "datasets": [
+    {
+      "name": "mv_metrics",
+      "displayName": "Metric view (KPIs)",
+      "asset_name": "main.emma_stowell.mv_calls"
+    },
+    {
+      "name": "site_capacity_compare",
+      "displayName": "Site peak agents vs capacity",
+      "queryLines": [
+        "WITH hourly AS (\n",
+        "  SELECT site_id, date, HOUR(started_at) AS h,\n",
+        "         COUNT(DISTINCT agent_id) AS active_agents\n",
+        "  FROM main.emma_stowell.silver_calls_wide\n",
+        "  WHERE date >= current_date() - INTERVAL 30 DAYS\n",
+        "  GROUP BY site_id, date, HOUR(started_at)\n",
+        "),\n",
+        "peak AS (\n",
+        "  SELECT site_id, MAX(active_agents) AS peak_agents\n",
+        "  FROM hourly GROUP BY site_id\n",
+        ")\n",
+        "SELECT s.site_id, 'Peak agents (concurrent)' AS metric, p.peak_agents AS value\n",
+        "FROM main.emma_stowell.silver_sites s JOIN peak p USING (site_id)\n",
+        "UNION ALL\n",
+        "SELECT s.site_id, 'Capacity (provisioned)' AS metric, s.capacity AS value\n",
+        "FROM main.emma_stowell.silver_sites s\n"
+      ]
+    },
+    {
+      "name": "sla_heatmap_data",
+      "displayName": "SLA heatmap (banded)",
+      "queryLines": [
+        "SELECT date, site_id,\n",
+        "       CASE\n",
+        "         WHEN AVG(meets_sla) < 0.55 THEN 0.10\n",
+        "         WHEN AVG(meets_sla) < 0.70 THEN 0.40\n",
+        "         WHEN AVG(meets_sla) < 0.80 THEN 0.65\n",
+        "         ELSE                              0.95\n",
+        "       END AS sla_band,\n",
+        "       AVG(meets_sla) AS sla_actual\n",
+        "FROM main.emma_stowell.silver_calls_wide\n",
+        "WHERE date >= current_date() - INTERVAL 180 DAYS\n",
+        "GROUP BY date, site_id\n"
+      ]
+    },
+    {
+      "name": "queue_wait_compare",
+      "displayName": "Queue wait — last 7d vs prior 7d",
+      "queryLines": [
+        "WITH max_date AS (\n",
+        "  SELECT MAX(date) AS d FROM main.emma_stowell.silver_calls_wide\n",
+        "  WHERE date >= current_date() - INTERVAL 180 DAYS\n",
+        ")\n",
+        "SELECT queue, 'Last 7 days' AS period, AVG(wait_time_sec) AS wait_sec\n",
+        "FROM main.emma_stowell.silver_calls_wide, max_date\n",
+        "WHERE channel IN ('voice','chat')\n",
+        "  AND date >  max_date.d - 7\n",
+        "  AND date <= max_date.d\n",
+        "GROUP BY queue\n",
+        "UNION ALL\n",
+        "SELECT queue, 'Prior 7 days' AS period, AVG(wait_time_sec) AS wait_sec\n",
+        "FROM main.emma_stowell.silver_calls_wide, max_date\n",
+        "WHERE channel IN ('voice','chat')\n",
+        "  AND date >  max_date.d - 14\n",
+        "  AND date <= max_date.d - 7\n",
+        "GROUP BY queue\n"
+      ]
+    },
+    {
+      "name": "wide_calls",
+      "displayName": "Calls (wide, 180d)",
+      "queryLines": [
+        "SELECT call_id, started_at, ended_at, date, week, channel, queue, topic, agent_id, agent_name, team, hire_date, full_time, tenure_days, tenure_bucket, site_id, region, timezone, site_capacity, handle_time_sec, handle_time_min, wait_time_sec, wait_time_min, wait_time_voice_chat_sec, abandoned, csat_score, sentiment_score, ai_summary, ai_sentiment_label, meets_sla, is_abandoned, is_negative\n",
+        "FROM main.emma_stowell.silver_calls_wide\n",
+        "WHERE date >= current_date() - INTERVAL 180 DAYS\n"
+      ],
+      "columns": [
+        {
+          "displayName": "wait_recent_7d_sec",
+          "description": "Voice/chat wait — last 7 days of data.",
+          "expression": "CASE WHEN date > MAX(date) OVER () - 7 AND channel IN ('voice','chat') THEN CAST(wait_time_sec AS DOUBLE) END"
+        },
+        {
+          "displayName": "wait_prior_7d_sec",
+          "description": "Voice/chat wait — 7 days before that.",
+          "expression": "CASE WHEN date > MAX(date) OVER () - 14 AND date <= MAX(date) OVER () - 7 AND channel IN ('voice','chat') THEN CAST(wait_time_sec AS DOUBLE) END"
+        }
+      ]
+    },
+    {
+      "name": "forecast_volume",
+      "displayName": "30-day forecast",
+      "queryLines": [
+        "SELECT ds, y_hat, y_hat_lower, y_hat_upper\n",
+        "FROM main.emma_stowell.gold_forecast_volume\n",
+        "WHERE :target_sla > 0 AND :assumed_aht > 0 AND :shrinkage >= 0\n",
+        "ORDER BY ds\n"
+      ],
+      "parameters": [
+        {
+          "displayName": "Target SLA",
+          "keyword": "target_sla",
+          "dataType": "DECIMAL",
+          "defaultSelection": {
+            "values": {
+              "dataType": "DECIMAL",
+              "values": [
+                {
+                  "value": "0.8"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "displayName": "Assumed AHT (s)",
+          "keyword": "assumed_aht",
+          "dataType": "DECIMAL",
+          "defaultSelection": {
+            "values": {
+              "dataType": "DECIMAL",
+              "values": [
+                {
+                  "value": "372"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "displayName": "Shrinkage",
+          "keyword": "shrinkage",
+          "dataType": "DECIMAL",
+          "defaultSelection": {
+            "values": {
+              "dataType": "DECIMAL",
+              "values": [
+                {
+                  "value": "0.25"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "displayName": "Shift hours",
+          "keyword": "shift_hours",
+          "dataType": "DECIMAL",
+          "defaultSelection": {
+            "values": {
+              "dataType": "DECIMAL",
+              "values": [
+                {
+                  "value": "8"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "columns": [
+        {
+          "displayName": "agents_needed",
+          "description": "Agents (FTE) needed per day at given shift length.",
+          "expression": "y_hat * :assumed_aht / (:shift_hours * 3600.0) / (1 - 0.5 * :target_sla) / (1 - :shrinkage)"
+        },
+        {
+          "displayName": "agents_needed_lower",
+          "description": "Lower bound of FTE (uses y_hat_lower).",
+          "expression": "y_hat_lower * :assumed_aht / (:shift_hours * 3600.0) / (1 - 0.5 * :target_sla) / (1 - :shrinkage)"
+        },
+        {
+          "displayName": "agents_needed_upper",
+          "description": "Upper bound of FTE (uses y_hat_upper).",
+          "expression": "y_hat_upper * :assumed_aht / (:shift_hours * 3600.0) / (1 - 0.5 * :target_sla) / (1 - :shrinkage)"
+        }
+      ]
+    },
+    {
+      "name": "emerging_topics",
+      "displayName": "Emerging topics (WoW sentiment delta)",
+      "queryLines": [
+        "WITH weekly AS (\n",
+        "  SELECT date_trunc('week', date) AS week, topic,\n",
+        "         AVG(sentiment_score) AS w_sentiment\n",
+        "  FROM main.emma_stowell.silver_calls_wide\n",
+        "  GROUP BY 1, 2\n",
+        ")\n",
+        "SELECT topic,\n",
+        "       w_sentiment AS latest_sentiment,\n",
+        "       LAG(w_sentiment) OVER (PARTITION BY topic ORDER BY week) AS prior_sentiment,\n",
+        "       w_sentiment - LAG(w_sentiment) OVER (PARTITION BY topic ORDER BY week) AS wow_delta\n",
+        "FROM weekly\n",
+        "QUALIFY ROW_NUMBER() OVER (PARTITION BY topic ORDER BY week DESC) = 1\n"
+      ]
+    },
+    {
+      "name": "ai_summaries",
+      "displayName": "AI-summarised calls (bottom 20 by sentiment)",
+      "queryLines": [
+        "SELECT call_id, topic,\n",
+        "       ROUND(sentiment_score, 2) AS sentiment_score,\n",
+        "       ai_sentiment_label,\n",
+        "       LEFT(ai_summary, 200) AS summary\n",
+        "FROM main.emma_stowell.silver_calls_wide\n",
+        "WHERE ai_summary IS NOT NULL\n",
+        "ORDER BY sentiment_score ASC\n",
+        "LIMIT 20\n"
+      ]
+    },
+    {
+      "name": "metrics_list",
+      "displayName": "Metrics List",
+      "queryLines": [
+        "SELECT * FROM VALUES(\"SLA\"),(\"AHT\"),(\"Wait Time\"),(\"CSAT Score\") AS data(metric_list)\n"
+      ]
+    },
+    {
+      "name": "date_list",
+      "displayName": "Date List",
+      "queryLines": [
+        "SELECT * FROM VALUES(\"Day\"),(\"Week\"),(\"Month\") AS data(date_list)\n"
+      ]
+    },
+    {
+      "name": "metric_drilldown",
+      "displayName": "Aggregated Values Summary Dataset",
+      "queryLines": [
+        "SELECT\n",
+        "  CASE\n",
+        "    WHEN :date_dimension = \"Month\" THEN DATE_TRUNC('MONTH', date)\n",
+        "    WHEN :date_dimension = \"Week\"  THEN DATE_TRUNC('WEEK', date)\n",
+        "    WHEN :date_dimension = \"Day\"   THEN date\n",
+        "  END AS grouped_date,\n",
+        "  count(call_id)         AS calls_handled,\n",
+        "  avg(meets_sla)         AS service_level,\n",
+        "  avg(wait_time_sec)     AS wait_time,\n",
+        "  avg(handle_time_sec)   AS AHT,\n",
+        "  avg(csat_score)        AS CSAT_score\n",
+        "FROM main.emma_stowell.silver_calls_wide\n",
+        "WHERE date >= '2026-01-01'\n",
+        "GROUP BY grouped_date\n"
+      ],
+      "parameters": [
+        {
+          "displayName": "Date Dimension",
+          "keyword": "date_dimension",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "Week"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "displayName": "choose_metric",
+          "keyword": "choose_metric",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "SLA"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "columns": [
+        {
+          "displayName": "Metric_Name",
+          "description": "derrives the metric for the drop down",
+          "expression": "CASE WHEN :choose_metric = 'SLA' THEN service_level WHEN :choose_metric = 'AHT' THEN AHT WHEN :choose_metric = 'Wait Time' THEN wait_time WHEN :choose_metric = 'CSAT Score' THEN csat_score END"
+        },
+        {
+          "displayName": "Target",
+          "description": "Target for selected Metric",
+          "expression": "CASE WHEN :choose_metric = 'SLA' THEN 0.8 WHEN :choose_metric = 'AHT' THEN 300 WHEN :choose_metric = 'Wait Time' THEN 20 WHEN :choose_metric = 'CSAT Score' THEN 5 END"
+        }
+      ]
+    },
+    {
+      "name": "agent_league",
+      "displayName": "Agent league (180d)",
+      "queryLines": [
+        "SELECT agent_name, site_id, tenure_bucket,\n",
+        "       COUNT(*)                            AS calls,\n",
+        "       AVG(handle_time_sec)                AS avg_handle_sec,\n",
+        "       AVG(wait_time_voice_chat_sec)       AS avg_wait_vc_sec,\n",
+        "       AVG(meets_sla)                      AS sla_pct,\n",
+        "       AVG(csat_score)                     AS avg_csat,\n",
+        "       AVG(sentiment_score)                AS avg_sentiment,\n",
+        "       AVG(is_negative)                    AS neg_share\n",
+        "FROM main.emma_stowell.silver_calls_wide\n",
+        "WHERE date >= current_date() - INTERVAL 180 DAYS\n",
+        "GROUP BY agent_name, site_id, tenure_bucket\n"
+      ]
+    }
+  ],
+  "pages": [
+    {
+      "name": "overview",
+      "displayName": "Overview",
+      "layout": [
+        {
+          "widget": {
+            "name": "hdr_ov_logo",
+            "multilineTextboxSpec": {
+              "lines": [
+                "![Meridian Customer Operations](data:image/svg+xml;base64,PHN2ZyB2aWV3Qm94PScwIDAgMjgwIDY0JyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnPgogIDxnIHRyYW5zZm9ybT0ndHJhbnNsYXRlKDgsOCknPgogICAgPGxpbmUgeDE9JzAnIHkxPScyNCcgeDI9JzUyJyB5Mj0nMjQnIHN0cm9rZT0nIzBGMkE0NCcgc3Ryb2tlLXdpZHRoPScyLjUnIHN0cm9rZS1saW5lY2FwPSdyb3VuZCcvPgogICAgPGNpcmNsZSBjeD0nMjYnIGN5PScyNCcgcj0nMTInIGZpbGw9JyNGNzZDNUUnLz4KICAgIDxwYXRoIGQ9J00gMTQgMjQgQSAxMiAxMiAwIDAgMSAzOCAyNCcgc3Ryb2tlPScjMEYyQTQ0JyBzdHJva2Utd2lkdGg9JzIuNScgZmlsbD0nbm9uZScgc3Ryb2tlLWxpbmVjYXA9J3JvdW5kJy8+CiAgPC9nPgogIDx0ZXh0IHg9JzcyJyB5PSczNCcgZm9udC1mYW1pbHk9J0ludGVyLCBBcmlhbCwgc2Fucy1zZXJpZicgZm9udC1zaXplPScyMicgZm9udC13ZWlnaHQ9JzcwMCcgZmlsbD0nIzBGMkE0NCcgbGV0dGVyLXNwYWNpbmc9JzAuNSc+TUVSSURJQU48L3RleHQ+CiAgPHRleHQgeD0nNzInIHk9JzUyJyBmb250LWZhbWlseT0nSW50ZXIsIEFyaWFsLCBzYW5zLXNlcmlmJyBmb250LXNpemU9JzEwJyBmb250LXdlaWdodD0nNTAwJyBmaWxsPScjNjQ3NDhCJyBsZXR0ZXItc3BhY2luZz0nMi40Jz5DVVNUT01FUiBPUEVSQVRJT05TPC90ZXh0Pgo8L3N2Zz4=)\n"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 3,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "hdr_ov_title",
+            "multilineTextboxSpec": {
+              "lines": [
+                "### Overview\n",
+                "_How's the contact centre this week?_\n"
+              ]
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 0,
+            "width": 7,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "flt_ov_channel",
+            "queries": [
+              {
+                "name": "dashboards//datasets/wide_calls_channel",
+                "query": {
+                  "datasetName": "wide_calls",
+                  "fields": [
+                    {
+                      "name": "channel",
+                      "expression": "`channel`"
+                    },
+                    {
+                      "name": "channel_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "dashboards//datasets/mv_metrics_channel",
+                "query": {
+                  "datasetName": "mv_metrics",
+                  "fields": [
+                    {
+                      "name": "channel",
+                      "expression": "`channel`"
+                    },
+                    {
+                      "name": "channel_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "channel",
+                    "displayName": "channel",
+                    "queryName": "dashboards//datasets/wide_calls_channel"
+                  },
+                  {
+                    "fieldName": "channel",
+                    "displayName": "channel",
+                    "queryName": "dashboards//datasets/mv_metrics_channel"
+                  }
+                ]
+              },
+              "frame": {
+                "title": "Channel",
+                "showTitle": true
+              }
+            }
+          },
+          "position": {
+            "x": 10,
+            "y": 0,
+            "width": 2,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "flt_ov_topic",
+            "queries": [
+              {
+                "name": "dashboards//datasets/wide_calls_topic",
+                "query": {
+                  "datasetName": "wide_calls",
+                  "fields": [
+                    {
+                      "name": "topic",
+                      "expression": "`topic`"
+                    },
+                    {
+                      "name": "topic_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "dashboards//datasets/mv_metrics_topic",
+                "query": {
+                  "datasetName": "mv_metrics",
+                  "fields": [
+                    {
+                      "name": "topic",
+                      "expression": "`topic`"
+                    },
+                    {
+                      "name": "topic_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "topic",
+                    "displayName": "topic",
+                    "queryName": "dashboards//datasets/wide_calls_topic"
+                  },
+                  {
+                    "fieldName": "topic",
+                    "displayName": "topic",
+                    "queryName": "dashboards//datasets/mv_metrics_topic"
+                  }
+                ]
+              },
+              "frame": {
+                "title": "Topic",
+                "showTitle": true
+              }
+            }
+          },
+          "position": {
+            "x": 10,
+            "y": 1,
+            "width": 2,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "ov_total",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "mv_metrics",
+                  "fields": [
+                    {
+                      "name": "daily(date)",
+                      "expression": "DATE_TRUNC(\"DAY\", `date`)"
+                    },
+                    {
+                      "name": "measure(total_calls)",
+                      "expression": "MEASURE(`total_calls`)"
+                    }
+                  ],
+                  "disaggregated": false,
+                  "orders": [
+                    {
+                      "direction": "DESC",
+                      "expression": "DATE_TRUNC(\"DAY\", `date`)"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "frame": {
+                "title": "Total calls (90d)",
+                "showTitle": true,
+                "description": "Total inbound calls handled across all channels in the last 90 days. Delta chip shows percent change vs the previous day.",
+                "showDescription": true
+              },
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "measure(total_calls)",
+                  "format": {
+                    "type": "number-plain",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 0
+                    },
+                    "abbreviation": "compact"
+                  },
+                  "displayName": "Total"
+                },
+                "period": {
+                  "fieldName": "daily(date)"
+                },
+                "target": {
+                  "fieldName": "measure(total_calls)",
+                  "period": {
+                    "type": "relative-to-value-period",
+                    "offset": -1
+                  },
+                  "change": {
+                    "type": "percent"
+                  },
+                  "format": {
+                    "type": "number-plain",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 0
+                    }
+                  },
+                  "style": {
+                    "fontSize": 10
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "ov_sla",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "mv_metrics",
+                  "fields": [
+                    {
+                      "name": "daily(date)",
+                      "expression": "DATE_TRUNC(\"DAY\", `date`)"
+                    },
+                    {
+                      "name": "measure(sla_pct)",
+                      "expression": "MEASURE(`sla_pct`)"
+                    }
+                  ],
+                  "disaggregated": false,
+                  "orders": [
+                    {
+                      "direction": "DESC",
+                      "expression": "DATE_TRUNC(\"DAY\", `date`)"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "frame": {
+                "title": "SLA % (avg 90d)",
+                "showTitle": true,
+                "description": "Share of calls answered within channel-aware SLA windows. Coloured green ≥80%, amber 70-80%, red <70%.",
+                "showDescription": true
+              },
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "measure(sla_pct)",
+                  "format": {
+                    "type": "number-percent",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 1
+                    }
+                  },
+                  "displayName": "SLA",
+                  "style": {
+                    "rules": [
+                      {
+                        "condition": {
+                          "operand": {
+                            "type": "data-value",
+                            "value": "0.8"
+                          },
+                          "operator": ">="
+                        },
+                        "color": "#00A972"
+                      },
+                      {
+                        "condition": {
+                          "operand": {
+                            "type": "data-value",
+                            "value": "0.7"
+                          },
+                          "operator": "<="
+                        },
+                        "color": "#C84B4B"
+                      },
+                      {
+                        "condition": {
+                          "operand": {
+                            "type": "data-value",
+                            "value": "0.7"
+                          },
+                          "operator": ">="
+                        },
+                        "color": "#E8B14F"
+                      }
+                    ]
+                  }
+                },
+                "period": {
+                  "fieldName": "daily(date)"
+                },
+                "target": {
+                  "fieldName": "measure(sla_pct)",
+                  "period": {
+                    "type": "relative-to-value-period",
+                    "offset": -1
+                  },
+                  "change": {
+                    "type": "percent"
+                  },
+                  "format": {
+                    "type": "number-plain",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    },
+                    "abbreviation": "none"
+                  },
+                  "style": {
+                    "fontSize": 10
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 2,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "ov_aht",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "mv_metrics",
+                  "fields": [
+                    {
+                      "name": "daily(date)",
+                      "expression": "DATE_TRUNC(\"DAY\", `date`)"
+                    },
+                    {
+                      "name": "measure(avg_handle_sec)",
+                      "expression": "MEASURE(`avg_handle_sec`)"
+                    }
+                  ],
+                  "disaggregated": false,
+                  "orders": [
+                    {
+                      "direction": "DESC",
+                      "expression": "DATE_TRUNC(\"DAY\", `date`)"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "frame": {
+                "title": "Avg Handle Time (s)",
+                "showTitle": true,
+                "description": "Average call handle time in seconds (lower is better). Green ≤300s, amber 300-420s, red >420s.",
+                "showDescription": true
+              },
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "measure(avg_handle_sec)",
+                  "format": {
+                    "type": "number-plain",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 0
+                    },
+                    "abbreviation": "none"
+                  },
+                  "displayName": "AHT",
+                  "style": {
+                    "rules": [
+                      {
+                        "condition": {
+                          "operand": {
+                            "type": "data-value",
+                            "value": "300"
+                          },
+                          "operator": "<="
+                        },
+                        "color": "#00A972"
+                      },
+                      {
+                        "condition": {
+                          "operand": {
+                            "type": "data-value",
+                            "value": "420"
+                          },
+                          "operator": ">="
+                        },
+                        "color": "#C84B4B"
+                      },
+                      {
+                        "condition": {
+                          "operand": {
+                            "type": "data-value",
+                            "value": "300"
+                          },
+                          "operator": ">="
+                        },
+                        "color": "#E8B14F"
+                      }
+                    ]
+                  }
+                },
+                "period": {
+                  "fieldName": "daily(date)"
+                },
+                "target": {
+                  "fieldName": "measure(avg_handle_sec)",
+                  "period": {
+                    "type": "relative-to-value-period",
+                    "offset": -1
+                  },
+                  "format": {
+                    "type": "number-plain",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    },
+                    "abbreviation": "none"
+                  },
+                  "style": {
+                    "fontSize": 10
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 2,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "ov_wait",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "mv_metrics",
+                  "fields": [
+                    {
+                      "name": "daily(date)",
+                      "expression": "DATE_TRUNC(\"DAY\", `date`)"
+                    },
+                    {
+                      "name": "measure(avg_wait_voice_chat_sec)",
+                      "expression": "MEASURE(`avg_wait_voice_chat_sec`)"
+                    }
+                  ],
+                  "disaggregated": false,
+                  "orders": [
+                    {
+                      "direction": "DESC",
+                      "expression": "DATE_TRUNC(\"DAY\", `date`)"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "frame": {
+                "title": "Avg Wait — voice/chat (s)",
+                "showTitle": true,
+                "description": "Average speed of answer for voice & chat in seconds. Green ≤30s, amber 30-60s, red ≥60s.",
+                "showDescription": true
+              },
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "measure(avg_wait_voice_chat_sec)",
+                  "format": {
+                    "type": "number-plain",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 0
+                    },
+                    "abbreviation": "none"
+                  },
+                  "displayName": "Wait",
+                  "style": {
+                    "rules": [
+                      {
+                        "condition": {
+                          "operand": {
+                            "type": "data-value",
+                            "value": "30"
+                          },
+                          "operator": "<="
+                        },
+                        "color": "#00A972"
+                      },
+                      {
+                        "condition": {
+                          "operand": {
+                            "type": "data-value",
+                            "value": "60"
+                          },
+                          "operator": ">="
+                        },
+                        "color": "#C84B4B"
+                      },
+                      {
+                        "condition": {
+                          "operand": {
+                            "type": "data-value",
+                            "value": "30"
+                          },
+                          "operator": ">="
+                        },
+                        "color": "#E8B14F"
+                      }
+                    ]
+                  }
+                },
+                "period": {
+                  "fieldName": "daily(date)"
+                },
+                "target": {
+                  "fieldName": "measure(avg_wait_voice_chat_sec)",
+                  "period": {
+                    "type": "relative-to-value-period",
+                    "offset": -1
+                  },
+                  "format": {
+                    "type": "number-plain",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    },
+                    "abbreviation": "none"
+                  },
+                  "style": {
+                    "fontSize": 10
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 2,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "ov_csat",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "mv_metrics",
+                  "fields": [
+                    {
+                      "name": "monthly(date)",
+                      "expression": "DATE_TRUNC(\"MONTH\", `date`)"
+                    },
+                    {
+                      "name": "measure(csat)",
+                      "expression": "MEASURE(`csat`)"
+                    }
+                  ],
+                  "disaggregated": false,
+                  "orders": [
+                    {
+                      "direction": "DESC",
+                      "expression": "DATE_TRUNC(\"MONTH\", `date`)"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "frame": {
+                "title": "CSAT (current month)",
+                "showTitle": true,
+                "description": "Average customer satisfaction score (1-5 scale) for the current month. Delta chip shows percent change vs 3 months ago — spans the Q1/Q2 boundary so reads as quarter-over-quarter. Industry target ≥4.0 — green ≥4.0, amber 3.5-4.0, red <3.5.",
+                "showDescription": true
+              },
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "measure(csat)",
+                  "format": {
+                    "type": "number-plain",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 2
+                    },
+                    "abbreviation": "none"
+                  },
+                  "displayName": "CSAT",
+                  "style": {
+                    "rules": [
+                      {
+                        "condition": {
+                          "operand": {
+                            "type": "data-value",
+                            "value": "4.0"
+                          },
+                          "operator": ">="
+                        },
+                        "color": "#00A972"
+                      },
+                      {
+                        "condition": {
+                          "operand": {
+                            "type": "data-value",
+                            "value": "3.5"
+                          },
+                          "operator": "<="
+                        },
+                        "color": "#C84B4B"
+                      },
+                      {
+                        "condition": {
+                          "operand": {
+                            "type": "data-value",
+                            "value": "3.5"
+                          },
+                          "operator": ">="
+                        },
+                        "color": "#E8B14F"
+                      }
+                    ]
+                  }
+                },
+                "period": {
+                  "fieldName": "monthly(date)"
+                },
+                "target": {
+                  "fieldName": "measure(csat)",
+                  "period": {
+                    "type": "relative-to-value-period",
+                    "offset": -3
+                  },
+                  "change": {
+                    "type": "percent"
+                  },
+                  "format": {
+                    "type": "number-plain",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    },
+                    "abbreviation": "none"
+                  },
+                  "style": {
+                    "fontSize": 10
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 8,
+            "y": 2,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "ov_aban",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "mv_metrics",
+                  "fields": [
+                    {
+                      "name": "daily(date)",
+                      "expression": "DATE_TRUNC(\"DAY\", `date`)"
+                    },
+                    {
+                      "name": "measure(abandon_rate)",
+                      "expression": "MEASURE(`abandon_rate`)"
+                    }
+                  ],
+                  "disaggregated": false,
+                  "orders": [
+                    {
+                      "direction": "DESC",
+                      "expression": "DATE_TRUNC(\"DAY\", `date`)"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "frame": {
+                "title": "Abandon % (avg 90d)",
+                "showTitle": true,
+                "description": "Share of calls where the customer hung up before being answered. Green ≤5%, amber 5-10%, red ≥10%.",
+                "showDescription": true
+              },
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "measure(abandon_rate)",
+                  "format": {
+                    "type": "number-percent",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 1
+                    }
+                  },
+                  "displayName": "Abandon",
+                  "style": {
+                    "rules": [
+                      {
+                        "condition": {
+                          "operand": {
+                            "type": "data-value",
+                            "value": "0.05"
+                          },
+                          "operator": "<="
+                        },
+                        "color": "#00A972"
+                      },
+                      {
+                        "condition": {
+                          "operand": {
+                            "type": "data-value",
+                            "value": "0.1"
+                          },
+                          "operator": ">="
+                        },
+                        "color": "#C84B4B"
+                      },
+                      {
+                        "condition": {
+                          "operand": {
+                            "type": "data-value",
+                            "value": "0.05"
+                          },
+                          "operator": ">="
+                        },
+                        "color": "#E8B14F"
+                      }
+                    ]
+                  }
+                },
+                "period": {
+                  "fieldName": "daily(date)"
+                },
+                "target": {
+                  "fieldName": "measure(abandon_rate)",
+                  "period": {
+                    "type": "relative-to-value-period",
+                    "offset": -1
+                  },
+                  "change": {
+                    "type": "percent"
+                  },
+                  "format": {
+                    "type": "number-plain",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    },
+                    "abbreviation": "none"
+                  },
+                  "style": {
+                    "fontSize": 10
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 10,
+            "y": 2,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "ov_channel_bar",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "mv_metrics",
+                  "fields": [
+                    {
+                      "name": "date",
+                      "expression": "`date`"
+                    },
+                    {
+                      "name": "measure(total_calls)",
+                      "expression": "MEASURE(`total_calls`)"
+                    },
+                    {
+                      "name": "channel",
+                      "expression": "`channel`"
+                    },
+                    {
+                      "name": "measure(sla_pct)",
+                      "expression": "MEASURE(`sla_pct`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "frame": {
+                "title": "Volume by channel · 90 days",
+                "showTitle": true,
+                "description": "Daily call volume stacked by channel (voice / chat / email). Use to spot channel-mix shifts and demand spikes over the last 90 days. Hover for SLA per channel/day — the email anomaly (best CSAT, worst SLA) shows up here.",
+                "showDescription": true
+              },
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "date",
+                  "displayName": "Date",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "fieldName": "measure(total_calls)",
+                  "displayName": "Calls handled",
+                  "format": {
+                    "type": "number-plain",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 0
+                    },
+                    "abbreviation": "compact"
+                  },
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "channel",
+                  "displayName": "Channel",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "extra": [
+                  {
+                    "fieldName": "measure(sla_pct)"
+                  }
+                ]
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 5,
+            "width": 8,
+            "height": 5
+          }
+        },
+        {
+          "widget": {
+            "name": "ov_top_topics",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "mv_metrics",
+                  "fields": [
+                    {
+                      "name": "topic",
+                      "expression": "`topic`"
+                    },
+                    {
+                      "name": "measure(total_calls)",
+                      "expression": "MEASURE(`total_calls`)"
+                    },
+                    {
+                      "name": "measure(csat)",
+                      "expression": "MEASURE(`csat`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "frame": {
+                "title": "Top topics · 90 days",
+                "showTitle": true,
+                "description": "Top call topics by volume over the last 90 days. Longest bars are the dominant drivers of contact volume. Hover for CSAT — the manager's punch is when the biggest topic is also the unhappiest.",
+                "showDescription": true
+              },
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "measure(total_calls)",
+                  "displayName": "Calls handled",
+                  "format": {
+                    "type": "number-plain",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 0
+                    },
+                    "abbreviation": "compact"
+                  },
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "y": {
+                  "fieldName": "topic",
+                  "displayName": "Topic",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "color": {
+                  "fieldName": "topic",
+                  "displayName": "Topic",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "extra": [
+                  {
+                    "fieldName": "measure(csat)"
+                  }
+                ]
+              }
+            }
+          },
+          "position": {
+            "x": 8,
+            "y": 5,
+            "width": 4,
+            "height": 5
+          }
+        },
+        {
+          "widget": {
+            "name": "ov_sentiment",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "mv_metrics",
+                  "fields": [
+                    {
+                      "name": "topic",
+                      "expression": "`topic`"
+                    },
+                    {
+                      "name": "month_x",
+                      "expression": "DATE_TRUNC(\"MONTH\", `date`)"
+                    },
+                    {
+                      "name": "measure(avg_sentiment)",
+                      "expression": "MEASURE(`avg_sentiment`)"
+                    },
+                    {
+                      "name": "measure(total_calls)",
+                      "expression": "MEASURE(`total_calls`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "frame": {
+                "title": "Sentiment trend by topic · 6 months (monthly)",
+                "showTitle": true,
+                "description": "Monthly average sentiment per topic on a -1 (very negative) to +1 (very positive) scale. Lines drifting downward flag topics where customer sentiment is degrading. Hover to see the call volume behind each point — small samples can swing wildly.",
+                "showDescription": true
+              },
+              "widgetType": "line",
+              "encodings": {
+                "x": {
+                  "fieldName": "month_x",
+                  "displayName": "Month",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "fieldName": "measure(avg_sentiment)",
+                  "displayName": "Avg sentiment (-1 to +1)",
+                  "format": {
+                    "type": "number-plain",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 2
+                    },
+                    "abbreviation": "none"
+                  },
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "topic",
+                  "displayName": "Topic",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "extra": [
+                  {
+                    "fieldName": "measure(total_calls)"
+                  }
+                ]
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 10,
+            "width": 12,
+            "height": 5
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1"
+    },
+    {
+      "name": "operations",
+      "displayName": "Operations",
+      "layout": [
+        {
+          "widget": {
+            "name": "hdr_op_logo",
+            "multilineTextboxSpec": {
+              "lines": [
+                "![Meridian Customer Operations](data:image/svg+xml;base64,PHN2ZyB2aWV3Qm94PScwIDAgMjgwIDY0JyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnPgogIDxnIHRyYW5zZm9ybT0ndHJhbnNsYXRlKDgsOCknPgogICAgPGxpbmUgeDE9JzAnIHkxPScyNCcgeDI9JzUyJyB5Mj0nMjQnIHN0cm9rZT0nIzBGMkE0NCcgc3Ryb2tlLXdpZHRoPScyLjUnIHN0cm9rZS1saW5lY2FwPSdyb3VuZCcvPgogICAgPGNpcmNsZSBjeD0nMjYnIGN5PScyNCcgcj0nMTInIGZpbGw9JyNGNzZDNUUnLz4KICAgIDxwYXRoIGQ9J00gMTQgMjQgQSAxMiAxMiAwIDAgMSAzOCAyNCcgc3Ryb2tlPScjMEYyQTQ0JyBzdHJva2Utd2lkdGg9JzIuNScgZmlsbD0nbm9uZScgc3Ryb2tlLWxpbmVjYXA9J3JvdW5kJy8+CiAgPC9nPgogIDx0ZXh0IHg9JzcyJyB5PSczNCcgZm9udC1mYW1pbHk9J0ludGVyLCBBcmlhbCwgc2Fucy1zZXJpZicgZm9udC1zaXplPScyMicgZm9udC13ZWlnaHQ9JzcwMCcgZmlsbD0nIzBGMkE0NCcgbGV0dGVyLXNwYWNpbmc9JzAuNSc+TUVSSURJQU48L3RleHQ+CiAgPHRleHQgeD0nNzInIHk9JzUyJyBmb250LWZhbWlseT0nSW50ZXIsIEFyaWFsLCBzYW5zLXNlcmlmJyBmb250LXNpemU9JzEwJyBmb250LXdlaWdodD0nNTAwJyBmaWxsPScjNjQ3NDhCJyBsZXR0ZXItc3BhY2luZz0nMi40Jz5DVVNUT01FUiBPUEVSQVRJT05TPC90ZXh0Pgo8L3N2Zz4=)\n"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 3,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "hdr_op_title",
+            "multilineTextboxSpec": {
+              "lines": [
+                "### Operations\n",
+                "_Where are we breaking SLA and why?_\n"
+              ]
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 0,
+            "width": 7,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "flt_op_channel",
+            "queries": [
+              {
+                "name": "dashboards//datasets/wide_calls_channel",
+                "query": {
+                  "datasetName": "wide_calls",
+                  "fields": [
+                    {
+                      "name": "channel",
+                      "expression": "`channel`"
+                    },
+                    {
+                      "name": "channel_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "dashboards//datasets/mv_metrics_channel",
+                "query": {
+                  "datasetName": "mv_metrics",
+                  "fields": [
+                    {
+                      "name": "channel",
+                      "expression": "`channel`"
+                    },
+                    {
+                      "name": "channel_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "channel",
+                    "displayName": "channel",
+                    "queryName": "dashboards//datasets/wide_calls_channel"
+                  },
+                  {
+                    "fieldName": "channel",
+                    "displayName": "channel",
+                    "queryName": "dashboards//datasets/mv_metrics_channel"
+                  }
+                ]
+              },
+              "frame": {
+                "title": "Channel",
+                "showTitle": true
+              }
+            }
+          },
+          "position": {
+            "x": 10,
+            "y": 0,
+            "width": 2,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "flt_op_topic",
+            "queries": [
+              {
+                "name": "dashboards//datasets/wide_calls_topic",
+                "query": {
+                  "datasetName": "wide_calls",
+                  "fields": [
+                    {
+                      "name": "topic",
+                      "expression": "`topic`"
+                    },
+                    {
+                      "name": "topic_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "dashboards//datasets/mv_metrics_topic",
+                "query": {
+                  "datasetName": "mv_metrics",
+                  "fields": [
+                    {
+                      "name": "topic",
+                      "expression": "`topic`"
+                    },
+                    {
+                      "name": "topic_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "topic",
+                    "displayName": "topic",
+                    "queryName": "dashboards//datasets/wide_calls_topic"
+                  },
+                  {
+                    "fieldName": "topic",
+                    "displayName": "topic",
+                    "queryName": "dashboards//datasets/mv_metrics_topic"
+                  }
+                ]
+              },
+              "frame": {
+                "title": "Topic",
+                "showTitle": true
+              }
+            }
+          },
+          "position": {
+            "x": 10,
+            "y": 1,
+            "width": 2,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "op_heatmap",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "sla_heatmap_data",
+                  "fields": [
+                    {
+                      "name": "date",
+                      "expression": "`date`"
+                    },
+                    {
+                      "name": "site_id",
+                      "expression": "`site_id`"
+                    },
+                    {
+                      "name": "sla_band",
+                      "expression": "`sla_band`"
+                    }
+                  ],
+                  "filters": [
+                    {
+                      "expression": "IN_RANGE(`date`, DATE'2026-03-01T00:00:00.000', DATE'2026-04-18T00:00:00.000')"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "frame": {
+                "title": "SLA heatmap · sites × day",
+                "showTitle": true,
+                "description": "SLA % by site (rows) and date (cols). Red rows = chronic underperformers; vertical red columns = stress events affecting all sites at once.",
+                "showDescription": true
+              },
+              "widgetType": "heatmap",
+              "encodings": {
+                "x": {
+                  "fieldName": "date",
+                  "displayName": "Date",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "fieldName": "site_id",
+                  "displayName": "Site",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "color": {
+                  "fieldName": "sla_band",
+                  "displayName": "SLA band",
+                  "format": {
+                    "type": "number-percent",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 0
+                    }
+                  },
+                  "scale": {
+                    "type": "quantitative",
+                    "colorRamp": {
+                      "mode": "custom-diverging",
+                      "colors": {
+                        "start": "#C84B4B",
+                        "mid": "#F4B860",
+                        "end": "#5C9462"
+                      }
+                    },
+                    "reverse": false
+                  }
+                }
+              },
+              "annotations": [
+                {
+                  "type": "vertical-line",
+                  "encodings": {
+                    "x": {
+                      "dataValue": "2026-03-06T00:00:00.000",
+                      "dataType": "DATE"
+                    },
+                    "label": {
+                      "value": "Unexpected High Call Volume"
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 12,
+            "height": 5
+          }
+        },
+        {
+          "widget": {
+            "name": "op_queue_wait",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "queue_wait_compare",
+                  "fields": [
+                    {
+                      "name": "queue",
+                      "expression": "`queue`"
+                    },
+                    {
+                      "name": "period",
+                      "expression": "`period`"
+                    },
+                    {
+                      "name": "wait",
+                      "expression": "AVG(`wait_sec`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "frame": {
+                "title": "Queue wait — last 7 days vs prior 7 (voice/chat, s)",
+                "showTitle": true,
+                "description": "Average voice/chat wait time per queue, comparing the last 7 days vs the 7 days before. Dark navy bars taller than light blue = queues getting slower week on week.",
+                "showDescription": true
+              },
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "queue",
+                  "displayName": "Queue",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "y": {
+                  "fieldName": "wait",
+                  "displayName": "Avg wait (s)",
+                  "format": {
+                    "type": "number-plain",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 0
+                    },
+                    "abbreviation": "none"
+                  },
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "period",
+                  "displayName": "Period",
+                  "scale": {
+                    "type": "categorical",
+                    "mappings": [
+                      {
+                        "value": "Last 7 days",
+                        "color": "#1B5C95"
+                      },
+                      {
+                        "value": "Prior 7 days",
+                        "color": "#A8C9DB"
+                      }
+                    ]
+                  }
+                }
+              },
+              "mark": {
+                "layout": "group"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 7,
+            "width": 8,
+            "height": 5
+          }
+        },
+        {
+          "widget": {
+            "name": "op_histogram",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "wide_calls",
+                  "fields": [
+                    {
+                      "name": "channel",
+                      "expression": "`channel`"
+                    },
+                    {
+                      "name": "min(handle_time_sec)",
+                      "expression": "MIN(`handle_time_sec`)"
+                    },
+                    {
+                      "name": "q1(handle_time_sec)",
+                      "expression": "PERCENTILE(`handle_time_sec`, 0.25)"
+                    },
+                    {
+                      "name": "median(handle_time_sec)",
+                      "expression": "MEDIAN(`handle_time_sec`)"
+                    },
+                    {
+                      "name": "q3(handle_time_sec)",
+                      "expression": "PERCENTILE(`handle_time_sec`, 0.75)"
+                    },
+                    {
+                      "name": "max(handle_time_sec)",
+                      "expression": "MAX(`handle_time_sec`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "frame": {
+                "title": "Handle-time distribution by channel",
+                "showTitle": true,
+                "description": "Box plot of handle time per channel — box = Q1-Q3, line = median, whiskers = min/max. Tall boxes mean inconsistent handling; voice should be tightest, email widest.",
+                "showDescription": true
+              },
+              "widgetType": "box",
+              "encodings": {
+                "x": {
+                  "fieldName": "channel",
+                  "displayName": "Channel",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "y": {
+                  "whiskerStart": {
+                    "fieldName": "min(handle_time_sec)"
+                  },
+                  "boxStart": {
+                    "fieldName": "q1(handle_time_sec)"
+                  },
+                  "boxMid": {
+                    "fieldName": "median(handle_time_sec)"
+                  },
+                  "boxEnd": {
+                    "fieldName": "q3(handle_time_sec)"
+                  },
+                  "whiskerEnd": {
+                    "fieldName": "max(handle_time_sec)"
+                  },
+                  "displayName": "Handle time (s)",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 8,
+            "y": 7,
+            "width": 4,
+            "height": 5
+          }
+        },
+        {
+          "widget": {
+            "name": "op_metric_over_time",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "metric_drilldown",
+                  "fields": [
+                    {
+                      "name": "grouped_date",
+                      "expression": "`grouped_date`"
+                    },
+                    {
+                      "name": "sum(Metric_Name)",
+                      "expression": "SUM(`Metric_Name`)"
+                    },
+                    {
+                      "name": "sum(Target)",
+                      "expression": "SUM(`Target`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "frame": {
+                "title": "Selected Metric Over Time",
+                "showTitle": true,
+                "description": "Selected metric (bars) plotted against its target line over the chosen date granularity. Pick a metric and granularity below — bars below the target line indicate underperformance.",
+                "showDescription": true
+              },
+              "widgetType": "combo",
+              "encodings": {
+                "x": {
+                  "fieldName": "grouped_date",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "primary": {
+                    "fields": [
+                      {
+                        "fieldName": "sum(Metric_Name)",
+                        "displayName": "Metric"
+                      }
+                    ]
+                  },
+                  "secondary": {
+                    "fields": [
+                      {
+                        "fieldName": "sum(Target)",
+                        "displayName": "Target"
+                      }
+                    ]
+                  },
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 12,
+            "width": 12,
+            "height": 5
+          }
+        },
+        {
+          "widget": {
+            "name": "select-metric",
+            "queries": [
+              {
+                "name": "dashboards//datasets/metrics_list_metric_list",
+                "query": {
+                  "datasetName": "metrics_list",
+                  "fields": [
+                    {
+                      "name": "metric_list",
+                      "expression": "`metric_list`"
+                    },
+                    {
+                      "name": "metric_list_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "parameter_dashboards//datasets/metric_drilldown_choose_metric",
+                "query": {
+                  "datasetName": "metric_drilldown",
+                  "parameters": [
+                    {
+                      "name": "choose_metric",
+                      "keyword": "choose_metric"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "selection": {
+                "defaultSelection": {
+                  "values": {
+                    "dataType": "STRING",
+                    "values": [
+                      {
+                        "value": "SLA"
+                      }
+                    ]
+                  }
+                }
+              },
+              "frame": {
+                "title": "Select Metric",
+                "showTitle": true
+              },
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "metric_list",
+                    "queryName": "dashboards//datasets/metrics_list_metric_list"
+                  },
+                  {
+                    "parameterName": "choose_metric",
+                    "queryName": "parameter_dashboards//datasets/metric_drilldown_choose_metric"
+                  }
+                ]
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 17,
+            "width": 4,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "date-granularity",
+            "queries": [
+              {
+                "name": "dashboards//datasets/date_list_date_list",
+                "query": {
+                  "datasetName": "date_list",
+                  "fields": [
+                    {
+                      "name": "date_list",
+                      "expression": "`date_list`"
+                    },
+                    {
+                      "name": "date_list_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "parameter_dashboards//datasets/metric_drilldown_date_dimension",
+                "query": {
+                  "datasetName": "metric_drilldown",
+                  "parameters": [
+                    {
+                      "name": "date_dimension",
+                      "keyword": "date_dimension"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "selection": {
+                "defaultSelection": {
+                  "values": {
+                    "dataType": "STRING",
+                    "values": [
+                      {
+                        "value": "Week"
+                      }
+                    ]
+                  }
+                }
+              },
+              "frame": {
+                "title": "Date Granularity",
+                "showTitle": true
+              },
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "date_list",
+                    "queryName": "dashboards//datasets/date_list_date_list"
+                  },
+                  {
+                    "parameterName": "date_dimension",
+                    "queryName": "parameter_dashboards//datasets/metric_drilldown_date_dimension"
+                  }
+                ]
+              },
+              "disallowAll": true
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 17,
+            "width": 4,
+            "height": 1
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1"
+    },
+    {
+      "name": "agents",
+      "displayName": "Agents",
+      "layout": [
+        {
+          "widget": {
+            "name": "hdr_ag_logo",
+            "multilineTextboxSpec": {
+              "lines": [
+                "![Meridian Customer Operations](data:image/svg+xml;base64,PHN2ZyB2aWV3Qm94PScwIDAgMjgwIDY0JyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnPgogIDxnIHRyYW5zZm9ybT0ndHJhbnNsYXRlKDgsOCknPgogICAgPGxpbmUgeDE9JzAnIHkxPScyNCcgeDI9JzUyJyB5Mj0nMjQnIHN0cm9rZT0nIzBGMkE0NCcgc3Ryb2tlLXdpZHRoPScyLjUnIHN0cm9rZS1saW5lY2FwPSdyb3VuZCcvPgogICAgPGNpcmNsZSBjeD0nMjYnIGN5PScyNCcgcj0nMTInIGZpbGw9JyNGNzZDNUUnLz4KICAgIDxwYXRoIGQ9J00gMTQgMjQgQSAxMiAxMiAwIDAgMSAzOCAyNCcgc3Ryb2tlPScjMEYyQTQ0JyBzdHJva2Utd2lkdGg9JzIuNScgZmlsbD0nbm9uZScgc3Ryb2tlLWxpbmVjYXA9J3JvdW5kJy8+CiAgPC9nPgogIDx0ZXh0IHg9JzcyJyB5PSczNCcgZm9udC1mYW1pbHk9J0ludGVyLCBBcmlhbCwgc2Fucy1zZXJpZicgZm9udC1zaXplPScyMicgZm9udC13ZWlnaHQ9JzcwMCcgZmlsbD0nIzBGMkE0NCcgbGV0dGVyLXNwYWNpbmc9JzAuNSc+TUVSSURJQU48L3RleHQ+CiAgPHRleHQgeD0nNzInIHk9JzUyJyBmb250LWZhbWlseT0nSW50ZXIsIEFyaWFsLCBzYW5zLXNlcmlmJyBmb250LXNpemU9JzEwJyBmb250LXdlaWdodD0nNTAwJyBmaWxsPScjNjQ3NDhCJyBsZXR0ZXItc3BhY2luZz0nMi40Jz5DVVNUT01FUiBPUEVSQVRJT05TPC90ZXh0Pgo8L3N2Zz4=)\n"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 3,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "hdr_ag_title",
+            "multilineTextboxSpec": {
+              "lines": [
+                "### Agents\n",
+                "_Who needs coaching, where do we need coverage?_\n"
+              ]
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 0,
+            "width": 9,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "flt_ag_agent_name",
+            "queries": [
+              {
+                "name": "dashboards//datasets/wide_calls_agent_name",
+                "query": {
+                  "datasetName": "wide_calls",
+                  "fields": [
+                    {
+                      "name": "agent_name",
+                      "expression": "`agent_name`"
+                    },
+                    {
+                      "name": "agent_name_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "dashboards//datasets/agent_league_agent_name",
+                "query": {
+                  "datasetName": "agent_league",
+                  "fields": [
+                    {
+                      "name": "agent_name",
+                      "expression": "`agent_name`"
+                    },
+                    {
+                      "name": "agent_name_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "agent_name",
+                    "displayName": "agent_name",
+                    "queryName": "dashboards//datasets/wide_calls_agent_name"
+                  },
+                  {
+                    "fieldName": "agent_name",
+                    "displayName": "agent_name",
+                    "queryName": "dashboards//datasets/agent_league_agent_name"
+                  }
+                ]
+              },
+              "frame": {
+                "title": "Agent",
+                "showTitle": true
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 7,
+            "width": 2,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "ag_scatter",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "mv_metrics",
+                  "fields": [
+                    {
+                      "name": "site_id",
+                      "expression": "`site_id`"
+                    },
+                    {
+                      "name": "tenure_bucket",
+                      "expression": "`tenure_bucket`"
+                    },
+                    {
+                      "name": "measure(avg_handle_sec)",
+                      "expression": "MEASURE(`avg_handle_sec`)"
+                    },
+                    {
+                      "name": "measure(csat)",
+                      "expression": "MEASURE(`csat`)"
+                    },
+                    {
+                      "name": "measure(total_calls)",
+                      "expression": "MEASURE(`total_calls`)"
+                    },
+                    {
+                      "name": "measure(sla_pct)",
+                      "expression": "MEASURE(`sla_pct`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "frame": {
+                "title": "Agent cohorts: handle time × CSAT (site × tenure)",
+                "showTitle": true,
+                "description": "Each bubble is one (site × tenure) cohort. X = avg handle time, Y = avg CSAT, size = call volume. Bottom-right = high handle time + low satisfaction = coaching opportunity; top-left = top performers.",
+                "showDescription": true
+              },
+              "widgetType": "scatter",
+              "encodings": {
+                "x": {
+                  "fieldName": "measure(avg_handle_sec)",
+                  "displayName": "Avg handle time (s)",
+                  "format": {
+                    "type": "number-plain",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 0
+                    },
+                    "abbreviation": "none"
+                  },
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "y": {
+                  "fieldName": "measure(csat)",
+                  "displayName": "Avg CSAT (1-5)",
+                  "format": {
+                    "type": "number-plain",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 2
+                    },
+                    "abbreviation": "none"
+                  },
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "size": {
+                  "fieldName": "measure(total_calls)",
+                  "displayName": "Calls handled",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "tenure_bucket",
+                  "displayName": "Tenure",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "extra": [
+                  {
+                    "fieldName": "measure(sla_pct)"
+                  }
+                ]
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 6,
+            "height": 5
+          }
+        },
+        {
+          "widget": {
+            "name": "ag_capacity",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "site_capacity_compare",
+                  "fields": [
+                    {
+                      "name": "site_id",
+                      "expression": "`site_id`"
+                    },
+                    {
+                      "name": "metric",
+                      "expression": "`metric`"
+                    },
+                    {
+                      "name": "value",
+                      "expression": "AVG(`value`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "frame": {
+                "title": "Site peak agents vs capacity",
+                "showTitle": true,
+                "description": "Per site: peak concurrent agents (busiest hour, last 30 days) vs the site's provisioned capacity. The headroom between the two bars tells you whether the site is running tight (small headroom) or overprovisioned (large headroom — Toledo's expansion-site story).",
+                "showDescription": true
+              },
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "site_id",
+                  "displayName": "Site",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "y": {
+                  "fieldName": "value",
+                  "displayName": "Agents (concurrent)",
+                  "format": {
+                    "type": "number-plain",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 0
+                    },
+                    "abbreviation": "compact"
+                  },
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "metric",
+                  "displayName": "Metric",
+                  "scale": {
+                    "type": "categorical",
+                    "mappings": [
+                      {
+                        "value": "Peak agents (concurrent)",
+                        "color": "#1B5C95"
+                      },
+                      {
+                        "value": "Capacity (provisioned)",
+                        "color": "#A8C9DB"
+                      }
+                    ]
+                  }
+                }
+              },
+              "mark": {
+                "layout": "group"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 2,
+            "width": 6,
+            "height": 5
+          }
+        },
+        {
+          "widget": {
+            "name": "ag_table",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "agent_league",
+                  "fields": [
+                    {
+                      "name": "agent_name",
+                      "expression": "`agent_name`"
+                    },
+                    {
+                      "name": "site_id",
+                      "expression": "`site_id`"
+                    },
+                    {
+                      "name": "tenure_bucket",
+                      "expression": "`tenure_bucket`"
+                    },
+                    {
+                      "name": "calls",
+                      "expression": "`calls`"
+                    },
+                    {
+                      "name": "avg_handle_sec",
+                      "expression": "`avg_handle_sec`"
+                    },
+                    {
+                      "name": "avg_wait_vc_sec",
+                      "expression": "`avg_wait_vc_sec`"
+                    },
+                    {
+                      "name": "sla_pct",
+                      "expression": "`sla_pct`"
+                    },
+                    {
+                      "name": "avg_csat",
+                      "expression": "`avg_csat`"
+                    },
+                    {
+                      "name": "avg_sentiment",
+                      "expression": "`avg_sentiment`"
+                    },
+                    {
+                      "name": "neg_share",
+                      "expression": "`neg_share`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "frame": {
+                "title": "Agent league table",
+                "showTitle": true,
+                "description": "Per-agent KPIs over the last 180 days. Cells coloured red/amber/green against the same thresholds as the Overview KPI tiles — sort or filter to find coaching candidates.",
+                "showDescription": true
+              },
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "agent_name",
+                    "useForSearch": false,
+                    "displayName": "Agent",
+                    "actions": {
+                      "hover": {
+                        "type": "tooltip",
+                        "tooltipTemplate": "{{ @ }}"
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "site_id",
+                    "useForSearch": false,
+                    "displayName": "Site",
+                    "actions": {
+                      "hover": {
+                        "type": "tooltip",
+                        "tooltipTemplate": "{{ @ }}"
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "tenure_bucket",
+                    "useForSearch": false,
+                    "displayName": "Tenure",
+                    "actions": {
+                      "hover": {
+                        "type": "tooltip",
+                        "tooltipTemplate": "{{ @ }}"
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "calls",
+                    "useForSearch": false,
+                    "displayName": "Calls",
+                    "actions": {
+                      "hover": {
+                        "type": "tooltip",
+                        "tooltipTemplate": "{{ @ }}"
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "avg_handle_sec",
+                    "useForSearch": false,
+                    "displayName": "AHT (s)",
+                    "actions": {
+                      "hover": {
+                        "type": "tooltip",
+                        "tooltipTemplate": "{{ @ }}"
+                      }
+                    },
+                    "format": {
+                      "type": "number-plain",
+                      "decimalPlaces": {
+                        "type": "exact",
+                        "places": 1
+                      },
+                      "abbreviation": "none"
+                    },
+                    "style": {
+                      "type": "basic",
+                      "rules": [
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "300"
+                            },
+                            "operator": "<="
+                          },
+                          "backgroundColor": "#00A972"
+                        },
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "420"
+                            },
+                            "operator": ">="
+                          },
+                          "backgroundColor": "#C84B4B"
+                        },
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "300"
+                            },
+                            "operator": ">="
+                          },
+                          "backgroundColor": "#E8B14F"
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "fieldName": "avg_wait_vc_sec",
+                    "useForSearch": false,
+                    "displayName": "ASA (s)",
+                    "actions": {
+                      "hover": {
+                        "type": "tooltip",
+                        "tooltipTemplate": "{{ @ }}"
+                      }
+                    },
+                    "format": {
+                      "type": "number-plain",
+                      "decimalPlaces": {
+                        "type": "exact",
+                        "places": 1
+                      },
+                      "abbreviation": "none"
+                    },
+                    "style": {
+                      "type": "basic",
+                      "rules": [
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "30"
+                            },
+                            "operator": "<="
+                          },
+                          "backgroundColor": "#00A972"
+                        },
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "60"
+                            },
+                            "operator": ">="
+                          },
+                          "backgroundColor": "#C84B4B"
+                        },
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "30"
+                            },
+                            "operator": ">="
+                          },
+                          "backgroundColor": "#E8B14F"
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "fieldName": "sla_pct",
+                    "useForSearch": false,
+                    "displayName": "SLA %",
+                    "actions": {
+                      "hover": {
+                        "type": "tooltip",
+                        "tooltipTemplate": "{{ @ }}"
+                      }
+                    },
+                    "format": {
+                      "type": "number-percent",
+                      "decimalPlaces": {
+                        "type": "exact",
+                        "places": 1
+                      }
+                    },
+                    "style": {
+                      "type": "basic",
+                      "rules": [
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "0.8"
+                            },
+                            "operator": ">="
+                          },
+                          "backgroundColor": "#00A972"
+                        },
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "0.7"
+                            },
+                            "operator": "<="
+                          },
+                          "backgroundColor": "#C84B4B"
+                        },
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "0.7"
+                            },
+                            "operator": ">="
+                          },
+                          "backgroundColor": "#E8B14F"
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "fieldName": "avg_csat",
+                    "useForSearch": false,
+                    "displayName": "CSAT",
+                    "actions": {
+                      "hover": {
+                        "type": "tooltip",
+                        "tooltipTemplate": "{{ @ }}"
+                      }
+                    },
+                    "format": {
+                      "type": "number-plain",
+                      "decimalPlaces": {
+                        "type": "exact",
+                        "places": 2
+                      },
+                      "abbreviation": "none"
+                    },
+                    "style": {
+                      "type": "basic",
+                      "rules": [
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "4.0"
+                            },
+                            "operator": ">="
+                          },
+                          "backgroundColor": "#00A972"
+                        },
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "3.5"
+                            },
+                            "operator": "<="
+                          },
+                          "backgroundColor": "#C84B4B"
+                        },
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "3.5"
+                            },
+                            "operator": ">="
+                          },
+                          "backgroundColor": "#E8B14F"
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "fieldName": "avg_sentiment",
+                    "useForSearch": false,
+                    "displayName": "Sentiment",
+                    "actions": {
+                      "hover": {
+                        "type": "tooltip",
+                        "tooltipTemplate": "{{ @ }}"
+                      }
+                    },
+                    "format": {
+                      "type": "number-plain",
+                      "decimalPlaces": {
+                        "type": "exact",
+                        "places": 2
+                      },
+                      "abbreviation": "none"
+                    },
+                    "style": {
+                      "type": "basic",
+                      "rules": [
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "0.3"
+                            },
+                            "operator": ">="
+                          },
+                          "backgroundColor": "#00A972"
+                        },
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "0.0"
+                            },
+                            "operator": "<="
+                          },
+                          "backgroundColor": "#C84B4B"
+                        },
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "0.0"
+                            },
+                            "operator": ">="
+                          },
+                          "backgroundColor": "#E8B14F"
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "fieldName": "neg_share",
+                    "useForSearch": false,
+                    "displayName": "Negative %",
+                    "actions": {
+                      "hover": {
+                        "type": "tooltip",
+                        "tooltipTemplate": "{{ @ }}"
+                      }
+                    },
+                    "format": {
+                      "type": "number-percent",
+                      "decimalPlaces": {
+                        "type": "exact",
+                        "places": 1
+                      }
+                    },
+                    "style": {
+                      "type": "basic",
+                      "rules": [
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "0.05"
+                            },
+                            "operator": "<="
+                          },
+                          "backgroundColor": "#00A972"
+                        },
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "0.1"
+                            },
+                            "operator": ">="
+                          },
+                          "backgroundColor": "#C84B4B"
+                        },
+                        {
+                          "condition": {
+                            "operand": {
+                              "type": "data-value",
+                              "value": "0.05"
+                            },
+                            "operator": ">="
+                          },
+                          "backgroundColor": "#E8B14F"
+                        }
+                      ]
+                    }
+                  }
+                ]
+              },
+              "displayRowNumbers": false,
+              "rowsPerPage": 25
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 8,
+            "width": 12,
+            "height": 6
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1"
+    },
+    {
+      "name": "voc",
+      "displayName": "Voice of Customer",
+      "layout": [
+        {
+          "widget": {
+            "name": "hdr_voc_logo",
+            "multilineTextboxSpec": {
+              "lines": [
+                "![Meridian Customer Operations](data:image/svg+xml;base64,PHN2ZyB2aWV3Qm94PScwIDAgMjgwIDY0JyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnPgogIDxnIHRyYW5zZm9ybT0ndHJhbnNsYXRlKDgsOCknPgogICAgPGxpbmUgeDE9JzAnIHkxPScyNCcgeDI9JzUyJyB5Mj0nMjQnIHN0cm9rZT0nIzBGMkE0NCcgc3Ryb2tlLXdpZHRoPScyLjUnIHN0cm9rZS1saW5lY2FwPSdyb3VuZCcvPgogICAgPGNpcmNsZSBjeD0nMjYnIGN5PScyNCcgcj0nMTInIGZpbGw9JyNGNzZDNUUnLz4KICAgIDxwYXRoIGQ9J00gMTQgMjQgQSAxMiAxMiAwIDAgMSAzOCAyNCcgc3Ryb2tlPScjMEYyQTQ0JyBzdHJva2Utd2lkdGg9JzIuNScgZmlsbD0nbm9uZScgc3Ryb2tlLWxpbmVjYXA9J3JvdW5kJy8+CiAgPC9nPgogIDx0ZXh0IHg9JzcyJyB5PSczNCcgZm9udC1mYW1pbHk9J0ludGVyLCBBcmlhbCwgc2Fucy1zZXJpZicgZm9udC1zaXplPScyMicgZm9udC13ZWlnaHQ9JzcwMCcgZmlsbD0nIzBGMkE0NCcgbGV0dGVyLXNwYWNpbmc9JzAuNSc+TUVSSURJQU48L3RleHQ+CiAgPHRleHQgeD0nNzInIHk9JzUyJyBmb250LWZhbWlseT0nSW50ZXIsIEFyaWFsLCBzYW5zLXNlcmlmJyBmb250LXNpemU9JzEwJyBmb250LXdlaWdodD0nNTAwJyBmaWxsPScjNjQ3NDhCJyBsZXR0ZXItc3BhY2luZz0nMi40Jz5DVVNUT01FUiBPUEVSQVRJT05TPC90ZXh0Pgo8L3N2Zz4=)\n"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 3,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "hdr_voc_title",
+            "multilineTextboxSpec": {
+              "lines": [
+                "### Voice of Customer\n",
+                "_What are callers actually saying?_\n"
+              ]
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 0,
+            "width": 7,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "flt_voc_channel",
+            "queries": [
+              {
+                "name": "dashboards//datasets/wide_calls_channel",
+                "query": {
+                  "datasetName": "wide_calls",
+                  "fields": [
+                    {
+                      "name": "channel",
+                      "expression": "`channel`"
+                    },
+                    {
+                      "name": "channel_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "dashboards//datasets/mv_metrics_channel",
+                "query": {
+                  "datasetName": "mv_metrics",
+                  "fields": [
+                    {
+                      "name": "channel",
+                      "expression": "`channel`"
+                    },
+                    {
+                      "name": "channel_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "channel",
+                    "displayName": "channel",
+                    "queryName": "dashboards//datasets/wide_calls_channel"
+                  },
+                  {
+                    "fieldName": "channel",
+                    "displayName": "channel",
+                    "queryName": "dashboards//datasets/mv_metrics_channel"
+                  }
+                ]
+              },
+              "frame": {
+                "title": "Channel",
+                "showTitle": true
+              }
+            }
+          },
+          "position": {
+            "x": 10,
+            "y": 0,
+            "width": 2,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "flt_voc_topic",
+            "queries": [
+              {
+                "name": "dashboards//datasets/wide_calls_topic",
+                "query": {
+                  "datasetName": "wide_calls",
+                  "fields": [
+                    {
+                      "name": "topic",
+                      "expression": "`topic`"
+                    },
+                    {
+                      "name": "topic_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "dashboards//datasets/mv_metrics_topic",
+                "query": {
+                  "datasetName": "mv_metrics",
+                  "fields": [
+                    {
+                      "name": "topic",
+                      "expression": "`topic`"
+                    },
+                    {
+                      "name": "topic_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "topic",
+                    "displayName": "topic",
+                    "queryName": "dashboards//datasets/wide_calls_topic"
+                  },
+                  {
+                    "fieldName": "topic",
+                    "displayName": "topic",
+                    "queryName": "dashboards//datasets/mv_metrics_topic"
+                  }
+                ]
+              },
+              "frame": {
+                "title": "Topic",
+                "showTitle": true
+              }
+            }
+          },
+          "position": {
+            "x": 10,
+            "y": 1,
+            "width": 2,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "voc_flow",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "mv_metrics",
+                  "fields": [
+                    {
+                      "name": "topic",
+                      "expression": "`topic`"
+                    },
+                    {
+                      "name": "channel",
+                      "expression": "`channel`"
+                    },
+                    {
+                      "name": "measure(total_calls)",
+                      "expression": "MEASURE(`total_calls`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "frame": {
+                "title": "Topic → Channel flow",
+                "showTitle": true,
+                "description": "Flow of calls from topic (left) into channel (right), bar thickness = call volume. Use to see which topics map to which channel — e.g. billing → voice, password reset → chat.",
+                "showDescription": true
+              },
+              "widgetType": "sankey",
+              "encodings": {
+                "stages": [
+                  {
+                    "fieldName": "topic",
+                    "displayName": "Topic"
+                  },
+                  {
+                    "fieldName": "channel",
+                    "displayName": "Channel"
+                  }
+                ],
+                "value": {
+                  "fieldName": "measure(total_calls)",
+                  "displayName": "Calls"
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 6,
+            "height": 5
+          }
+        },
+        {
+          "widget": {
+            "name": "voc_sentiment",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "mv_metrics",
+                  "fields": [
+                    {
+                      "name": "topic",
+                      "expression": "`topic`"
+                    },
+                    {
+                      "name": "month_x",
+                      "expression": "DATE_TRUNC(\"MONTH\", `date`)"
+                    },
+                    {
+                      "name": "measure(avg_sentiment)",
+                      "expression": "MEASURE(`avg_sentiment`)"
+                    },
+                    {
+                      "name": "measure(total_calls)",
+                      "expression": "MEASURE(`total_calls`)"
+                    },
+                    {
+                      "name": "measure(negative_share)",
+                      "expression": "MEASURE(`negative_share`)"
+                    }
+                  ],
+                  "filters": [
+                    {
+                      "expression": "IN_RANGE(`date`, DATE'2025-10-01T00:00:00.000', DATE'2026-04-30T00:00:00.000')"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "frame": {
+                "title": "Topic sentiment trend · 6 months (monthly)",
+                "showTitle": true,
+                "description": "Monthly average sentiment per topic on a -1 to +1 scale. Lines trending down = topics where customer sentiment is degrading and need attention. Hover to see call volume and the share of clearly-negative calls behind each point.",
+                "showDescription": true
+              },
+              "widgetType": "line",
+              "encodings": {
+                "x": {
+                  "fieldName": "month_x",
+                  "displayName": "Month",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "fieldName": "measure(avg_sentiment)",
+                  "displayName": "Avg sentiment (-1 to +1)",
+                  "format": {
+                    "type": "number-plain",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 2
+                    },
+                    "abbreviation": "none"
+                  },
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "topic",
+                  "displayName": "Topic",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "extra": [
+                  {
+                    "fieldName": "measure(total_calls)"
+                  },
+                  {
+                    "fieldName": "measure(negative_share)"
+                  }
+                ]
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 2,
+            "width": 6,
+            "height": 5
+          }
+        },
+        {
+          "widget": {
+            "name": "voc_emerging",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "emerging_topics",
+                  "fields": [
+                    {
+                      "name": "topic",
+                      "expression": "`topic`"
+                    },
+                    {
+                      "name": "latest_sentiment",
+                      "expression": "`latest_sentiment`"
+                    },
+                    {
+                      "name": "prior_sentiment",
+                      "expression": "`prior_sentiment`"
+                    },
+                    {
+                      "name": "wow_delta",
+                      "expression": "`wow_delta`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "widgetType": "table",
+              "frame": {
+                "title": "Emerging topics (sentiment change WoW)",
+                "showTitle": true,
+                "description": "Topics ranked by week-over-week sentiment change. Large negative Δ WoW values flag topics where customer mood deteriorated this week.",
+                "showDescription": true
+              },
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "topic",
+                    "title": "Topic",
+                    "type": "string",
+                    "displayAs": "string",
+                    "alignContent": "left",
+                    "visible": true,
+                    "order": 0,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "imageHeight": "",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkOpenInNewTab": true,
+                    "allowSearch": false,
+                    "allowHTML": false,
+                    "highlightLinks": false,
+                    "useMonospaceFont": false,
+                    "preserveWhitespace": false
+                  },
+                  {
+                    "fieldName": "latest_sentiment",
+                    "title": "Latest",
+                    "type": "float",
+                    "displayAs": "number",
+                    "alignContent": "right",
+                    "visible": true,
+                    "order": 1,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "imageHeight": "",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkOpenInNewTab": true,
+                    "allowSearch": false,
+                    "allowHTML": false,
+                    "highlightLinks": false,
+                    "useMonospaceFont": false,
+                    "preserveWhitespace": false
+                  },
+                  {
+                    "fieldName": "prior_sentiment",
+                    "title": "Prior",
+                    "type": "float",
+                    "displayAs": "number",
+                    "alignContent": "right",
+                    "visible": true,
+                    "order": 2,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "imageHeight": "",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkOpenInNewTab": true,
+                    "allowSearch": false,
+                    "allowHTML": false,
+                    "highlightLinks": false,
+                    "useMonospaceFont": false,
+                    "preserveWhitespace": false
+                  },
+                  {
+                    "fieldName": "wow_delta",
+                    "title": "Δ WoW",
+                    "type": "float",
+                    "displayAs": "number",
+                    "alignContent": "right",
+                    "visible": true,
+                    "order": 3,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "imageHeight": "",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkOpenInNewTab": true,
+                    "allowSearch": false,
+                    "allowHTML": false,
+                    "highlightLinks": false,
+                    "useMonospaceFont": false,
+                    "preserveWhitespace": false
+                  }
+                ]
+              },
+              "invisibleColumns": [],
+              "allowHTMLByDefault": false,
+              "condensed": true,
+              "itemsPerPage": 25,
+              "paginationSize": "default",
+              "withRowNumber": false
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 7,
+            "width": 5,
+            "height": 5
+          }
+        },
+        {
+          "widget": {
+            "name": "voc_summaries",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ai_summaries",
+                  "fields": [
+                    {
+                      "name": "call_id",
+                      "expression": "`call_id`"
+                    },
+                    {
+                      "name": "topic",
+                      "expression": "`topic`"
+                    },
+                    {
+                      "name": "sentiment_score",
+                      "expression": "`sentiment_score`"
+                    },
+                    {
+                      "name": "ai_sentiment_label",
+                      "expression": "`ai_sentiment_label`"
+                    },
+                    {
+                      "name": "summary",
+                      "expression": "`summary`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "widgetType": "table",
+              "frame": {
+                "title": "AI-summarised calls (bottom 20 by sentiment)",
+                "showTitle": true,
+                "description": "20 most negative calls in the period with AI-generated summaries. Read these to understand the qualitative drivers behind the sentiment scores above.",
+                "showDescription": true
+              },
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "call_id",
+                    "title": "Call",
+                    "type": "string",
+                    "displayAs": "string",
+                    "alignContent": "left",
+                    "visible": true,
+                    "order": 0,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "imageHeight": "",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkOpenInNewTab": true,
+                    "allowSearch": false,
+                    "allowHTML": false,
+                    "highlightLinks": false,
+                    "useMonospaceFont": false,
+                    "preserveWhitespace": false
+                  },
+                  {
+                    "fieldName": "topic",
+                    "title": "Topic",
+                    "type": "string",
+                    "displayAs": "string",
+                    "alignContent": "left",
+                    "visible": true,
+                    "order": 1,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "imageHeight": "",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkOpenInNewTab": true,
+                    "allowSearch": false,
+                    "allowHTML": false,
+                    "highlightLinks": false,
+                    "useMonospaceFont": false,
+                    "preserveWhitespace": false
+                  },
+                  {
+                    "fieldName": "sentiment_score",
+                    "title": "Sentiment",
+                    "type": "float",
+                    "displayAs": "number",
+                    "alignContent": "right",
+                    "visible": true,
+                    "order": 2,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "imageHeight": "",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkOpenInNewTab": true,
+                    "allowSearch": false,
+                    "allowHTML": false,
+                    "highlightLinks": false,
+                    "useMonospaceFont": false,
+                    "preserveWhitespace": false
+                  },
+                  {
+                    "fieldName": "ai_sentiment_label",
+                    "title": "Label",
+                    "type": "string",
+                    "displayAs": "string",
+                    "alignContent": "left",
+                    "visible": true,
+                    "order": 3,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "imageHeight": "",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkOpenInNewTab": true,
+                    "allowSearch": false,
+                    "allowHTML": false,
+                    "highlightLinks": false,
+                    "useMonospaceFont": false,
+                    "preserveWhitespace": false
+                  },
+                  {
+                    "fieldName": "summary",
+                    "title": "AI summary",
+                    "type": "string",
+                    "displayAs": "string",
+                    "alignContent": "left",
+                    "visible": true,
+                    "order": 4,
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "imageHeight": "",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkOpenInNewTab": true,
+                    "allowSearch": false,
+                    "allowHTML": false,
+                    "highlightLinks": false,
+                    "useMonospaceFont": false,
+                    "preserveWhitespace": false
+                  }
+                ]
+              },
+              "invisibleColumns": [],
+              "allowHTMLByDefault": false,
+              "condensed": true,
+              "itemsPerPage": 25,
+              "paginationSize": "default",
+              "withRowNumber": false
+            }
+          },
+          "position": {
+            "x": 5,
+            "y": 7,
+            "width": 7,
+            "height": 5
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1"
+    },
+    {
+      "name": "forecast",
+      "displayName": "Forecast & Plan",
+      "layout": [
+        {
+          "widget": {
+            "name": "hdr_fc_logo",
+            "multilineTextboxSpec": {
+              "lines": [
+                "![Meridian Customer Operations](data:image/svg+xml;base64,PHN2ZyB2aWV3Qm94PScwIDAgMjgwIDY0JyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnPgogIDxnIHRyYW5zZm9ybT0ndHJhbnNsYXRlKDgsOCknPgogICAgPGxpbmUgeDE9JzAnIHkxPScyNCcgeDI9JzUyJyB5Mj0nMjQnIHN0cm9rZT0nIzBGMkE0NCcgc3Ryb2tlLXdpZHRoPScyLjUnIHN0cm9rZS1saW5lY2FwPSdyb3VuZCcvPgogICAgPGNpcmNsZSBjeD0nMjYnIGN5PScyNCcgcj0nMTInIGZpbGw9JyNGNzZDNUUnLz4KICAgIDxwYXRoIGQ9J00gMTQgMjQgQSAxMiAxMiAwIDAgMSAzOCAyNCcgc3Ryb2tlPScjMEYyQTQ0JyBzdHJva2Utd2lkdGg9JzIuNScgZmlsbD0nbm9uZScgc3Ryb2tlLWxpbmVjYXA9J3JvdW5kJy8+CiAgPC9nPgogIDx0ZXh0IHg9JzcyJyB5PSczNCcgZm9udC1mYW1pbHk9J0ludGVyLCBBcmlhbCwgc2Fucy1zZXJpZicgZm9udC1zaXplPScyMicgZm9udC13ZWlnaHQ9JzcwMCcgZmlsbD0nIzBGMkE0NCcgbGV0dGVyLXNwYWNpbmc9JzAuNSc+TUVSSURJQU48L3RleHQ+CiAgPHRleHQgeD0nNzInIHk9JzUyJyBmb250LWZhbWlseT0nSW50ZXIsIEFyaWFsLCBzYW5zLXNlcmlmJyBmb250LXNpemU9JzEwJyBmb250LXdlaWdodD0nNTAwJyBmaWxsPScjNjQ3NDhCJyBsZXR0ZXItc3BhY2luZz0nMi40Jz5DVVNUT01FUiBPUEVSQVRJT05TPC90ZXh0Pgo8L3N2Zz4=)\n"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 3,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "hdr_fc_title",
+            "multilineTextboxSpec": {
+              "lines": [
+                "### Forecast & Plan\n",
+                "_How should we staff next month?_\n"
+              ]
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 0,
+            "width": 9,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "fc_p_sla",
+            "queries": [
+              {
+                "name": "parameter_dashboards//datasets/forecast_volume_target_sla",
+                "query": {
+                  "datasetName": "forecast_volume",
+                  "parameters": [
+                    {
+                      "name": "target_sla",
+                      "keyword": "target_sla"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "frame": {
+                "title": "Target SLA",
+                "showTitle": true
+              },
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "parameterName": "target_sla",
+                    "queryName": "parameter_dashboards//datasets/forecast_volume_target_sla"
+                  }
+                ]
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 3,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "fc_p_aht",
+            "queries": [
+              {
+                "name": "parameter_dashboards//datasets/forecast_volume_assumed_aht",
+                "query": {
+                  "datasetName": "forecast_volume",
+                  "parameters": [
+                    {
+                      "name": "assumed_aht",
+                      "keyword": "assumed_aht"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "frame": {
+                "title": "Assumed AHT (s)",
+                "showTitle": true
+              },
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "parameterName": "assumed_aht",
+                    "queryName": "parameter_dashboards//datasets/forecast_volume_assumed_aht"
+                  }
+                ]
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 2,
+            "width": 3,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "fc_p_shrnk",
+            "queries": [
+              {
+                "name": "parameter_dashboards//datasets/forecast_volume_shrinkage",
+                "query": {
+                  "datasetName": "forecast_volume",
+                  "parameters": [
+                    {
+                      "name": "shrinkage",
+                      "keyword": "shrinkage"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "frame": {
+                "title": "Shrinkage",
+                "showTitle": true
+              },
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "parameterName": "shrinkage",
+                    "queryName": "parameter_dashboards//datasets/forecast_volume_shrinkage"
+                  }
+                ]
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 2,
+            "width": 3,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "fc_p_shift",
+            "queries": [
+              {
+                "name": "parameter_dashboards//datasets/forecast_volume_shift_hours",
+                "query": {
+                  "datasetName": "forecast_volume",
+                  "parameters": [
+                    {
+                      "name": "shift_hours",
+                      "keyword": "shift_hours"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "frame": {
+                "title": "Shift hours",
+                "showTitle": true
+              },
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "parameterName": "shift_hours",
+                    "queryName": "parameter_dashboards//datasets/forecast_volume_shift_hours"
+                  }
+                ]
+              }
+            }
+          },
+          "position": {
+            "x": 9,
+            "y": 2,
+            "width": 3,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "fc_line",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "forecast_volume",
+                  "fields": [
+                    {
+                      "name": "ds",
+                      "expression": "`ds`"
+                    },
+                    {
+                      "name": "y_hat",
+                      "expression": "`y_hat`"
+                    },
+                    {
+                      "name": "y_hat_lower",
+                      "expression": "`y_hat_lower`"
+                    },
+                    {
+                      "name": "y_hat_upper",
+                      "expression": "`y_hat_upper`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "frame": {
+                "title": "Call volume forecast · next 30 days",
+                "showTitle": true,
+                "description": "30-day forecast of daily call volume with lower/upper confidence bounds. Use the upper-bound line for conservative staffing; the centre line is the point estimate.",
+                "showDescription": true
+              },
+              "widgetType": "line",
+              "encodings": {
+                "x": {
+                  "fieldName": "ds",
+                  "displayName": "Date",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "fieldName": "y_hat",
+                  "displayName": "Forecast (calls/day)",
+                  "format": {
+                    "type": "number-plain",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 0
+                    },
+                    "abbreviation": "compact"
+                  },
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "extra": [
+                  {
+                    "fieldName": "y_hat_lower"
+                  },
+                  {
+                    "fieldName": "y_hat_upper"
+                  }
+                ]
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 3,
+            "width": 8,
+            "height": 5
+          }
+        },
+        {
+          "widget": {
+            "name": "fc_volume",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "forecast_volume",
+                  "fields": [
+                    {
+                      "name": "daily(ds)",
+                      "expression": "DATE_TRUNC(\"DAY\", `ds`)"
+                    },
+                    {
+                      "name": "avg(y_hat)",
+                      "expression": "AVG(`y_hat`)"
+                    }
+                  ],
+                  "disaggregated": false,
+                  "orders": [
+                    {
+                      "direction": "DESC",
+                      "expression": "DATE_TRUNC(\"DAY\", `ds`)"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "frame": {
+                "title": "Avg daily volume (forecast)",
+                "showTitle": true,
+                "description": "Average forecast call volume per day across the next 30 days. Sparkline shows the daily forecast trajectory.",
+                "showDescription": true
+              },
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "avg(y_hat)",
+                  "format": {
+                    "type": "number-plain",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 0
+                    },
+                    "abbreviation": "compact"
+                  },
+                  "displayName": "Calls/day"
+                },
+                "period": {
+                  "fieldName": "daily(ds)"
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 8,
+            "y": 3,
+            "width": 4,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "fc_agents",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "forecast_volume",
+                  "fields": [
+                    {
+                      "name": "daily(ds)",
+                      "expression": "DATE_TRUNC(\"DAY\", `ds`)"
+                    },
+                    {
+                      "name": "avg_agents",
+                      "expression": "AVG(`agents_needed`)"
+                    }
+                  ],
+                  "disaggregated": false,
+                  "orders": [
+                    {
+                      "direction": "DESC",
+                      "expression": "DATE_TRUNC(\"DAY\", `ds`)"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "frame": {
+                "title": "Avg agents needed per day",
+                "showTitle": true,
+                "description": "Average FTE needed per day across the forecast horizon at the chosen Target SLA / AHT / Shrinkage. Live-recalculates when you change any scenario parameter above.",
+                "showDescription": true
+              },
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "avg_agents",
+                  "format": {
+                    "type": "number-plain",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 2
+                    },
+                    "abbreviation": "none"
+                  },
+                  "displayName": "Agents"
+                },
+                "period": {
+                  "fieldName": "daily(ds)"
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 8,
+            "y": 5,
+            "width": 4,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "fc_agents_line",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "forecast_volume",
+                  "fields": [
+                    {
+                      "name": "ds",
+                      "expression": "`ds`"
+                    },
+                    {
+                      "name": "agents_needed_lower",
+                      "expression": "`agents_needed_lower`"
+                    },
+                    {
+                      "name": "agents_needed",
+                      "expression": "`agents_needed`"
+                    },
+                    {
+                      "name": "agents_needed_upper",
+                      "expression": "`agents_needed_upper`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "frame": {
+                "title": "Agents needed per day · scenario",
+                "showTitle": true,
+                "description": "Daily FTE required across the 30-day forecast horizon, with lower/upper bounds matching the volume confidence band. Recomputes whenever scenario parameters change — staff to the upper bound for safety.",
+                "showDescription": true
+              },
+              "widgetType": "line",
+              "encodings": {
+                "x": {
+                  "fieldName": "ds",
+                  "displayName": "Date",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "fieldName": "agents_needed",
+                  "displayName": "Agents needed (FTE)",
+                  "format": {
+                    "type": "number-plain",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 2
+                    },
+                    "abbreviation": "none"
+                  },
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "extra": [
+                  {
+                    "fieldName": "agents_needed_lower"
+                  },
+                  {
+                    "fieldName": "agents_needed_upper"
+                  }
+                ]
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 8,
+            "width": 12,
+            "height": 5
+          }
+        },
+        {
+          "widget": {
+            "name": "fc_note",
+            "multilineTextboxSpec": {
+              "lines": [
+                "**Scenario formula:** `agents_needed = volume × AHT(s) / (shift_hours × 3600) / (1 − 0.5 × target_SLA) / (1 − shrinkage)`  \n",
+                "_Adjust the parameters above to model different staffing scenarios — every chart recomputes live. The `(1 − 0.5 × target_SLA)` term approximates Erlang-C occupancy headroom: tighter SLA needs more agents. Set shift_hours = 24 for 24/7 concurrent coverage, 8 for a typical agent shift._\n"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 13,
+            "width": 12,
+            "height": 2
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1"
+    },
+    {
+      "name": "changelog",
+      "displayName": "Changelog",
+      "layout": [
+        {
+          "widget": {
+            "name": "cl_intro",
+            "multilineTextboxSpec": {
+              "lines": [
+                "# Changelog\n",
+                "\n",
+                "Log of changes to the Meridian Customer Operations dashboard.\n",
+                "\n",
+                "---\n",
+                "\n",
+                "### 2026-04-30 — Companion Genie space created\n",
+                "\n",
+                "Natural-language Q&A surface over the same metric view, with 53 parameterised SQL examples (31 trusted-asset candidates) and 16 embedded benchmarks visible in the Genie Benchmarks tab.\n",
+                "\n",
+                "### 2026-04-22 — Dashboard created\n",
+                "\n",
+                "Six pages — Overview, Operations, Agents, Voice of Customer, Forecast & Plan, Changelog — over `mv_calls`, `silver_calls_wide`, `gold_kpi_summary`, `gold_forecast_volume`, and `gold_calls_enriched`.\n"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 12,
+            "height": 8
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1"
+    },
+    {
+      "name": "global_filters",
+      "displayName": "Global Filters",
+      "layout": [
+        {
+          "widget": {
+            "name": "flt_global_site",
+            "queries": [
+              {
+                "name": "dashboards//datasets/wide_calls_site_id",
+                "query": {
+                  "datasetName": "wide_calls",
+                  "fields": [
+                    {
+                      "name": "site_id",
+                      "expression": "`site_id`"
+                    },
+                    {
+                      "name": "site_id_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "dashboards//datasets/mv_metrics_site_id",
+                "query": {
+                  "datasetName": "mv_metrics",
+                  "fields": [
+                    {
+                      "name": "site_id",
+                      "expression": "`site_id`"
+                    },
+                    {
+                      "name": "site_id_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "dashboards//datasets/agent_league_site_id",
+                "query": {
+                  "datasetName": "agent_league",
+                  "fields": [
+                    {
+                      "name": "site_id",
+                      "expression": "`site_id`"
+                    },
+                    {
+                      "name": "site_id_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "site_id",
+                    "displayName": "site_id",
+                    "queryName": "dashboards//datasets/wide_calls_site_id"
+                  },
+                  {
+                    "fieldName": "site_id",
+                    "displayName": "site_id",
+                    "queryName": "dashboards//datasets/mv_metrics_site_id"
+                  },
+                  {
+                    "fieldName": "site_id",
+                    "displayName": "site_id",
+                    "queryName": "dashboards//datasets/agent_league_site_id"
+                  }
+                ]
+              },
+              "frame": {
+                "title": "Site",
+                "showTitle": true
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 1,
+            "height": 2
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_GLOBAL_FILTERS",
+      "layoutVersion": "GRID_V1"
+    }
+  ],
+  "uiSettings": {
+    "theme": {
+      "canvasBackgroundColor": {
+        "light": "#FAF7F2"
+      },
+      "widgetBackgroundColor": {
+        "light": "#FFFFFF"
+      },
+      "widgetBorderColor": {
+        "light": "#E5DED3"
+      },
+      "fontColor": {
+        "light": "#1F2937"
+      },
+      "selectionColor": {
+        "light": "#F76C5E"
+      },
+      "visualizationColors": [
+        "#1B5C95",
+        "#F76C5E",
+        "#5C9462",
+        "#E8B14F",
+        "#4A9CA8",
+        "#7C5295",
+        "#C26B4F",
+        "#6B7A8F",
+        "#97A580",
+        "#8C3A4D"
+      ],
+      "widgetHeaderAlignment": "ALIGNMENT_UNSPECIFIED",
+      "fontFamily": "Inter"
+    },
+    "applyModeEnabled": false
+  }
+}
